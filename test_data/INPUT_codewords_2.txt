@@ -1,0 +1,42 @@
+<IGNORE> This is written to be compared to an output file using testing_utilities.compare_files_with_regex: All the <REGEX> lines will be matched to the output file lines as regular expressions instead of requiring the lines to be identical, and all the <IGNORE> lines (like this one) will be ignored in the comparison.
+<IGNORE> Remember the REGEX lines are now regular expressions, so some characters need to be escaped!
+<REGEX># Command line this file was generated with: .*
+<REGEX># Path: .*
+<REGEX># Date: .*,		User: .*,		System: .*
+<REGEX># Full options: \{.*\}
+
+sample_number	plate_and_well_position	codeword	transfers	volume (ul)
+0	Source1,A1	0011	2	40
+1	Source1,A2	0101	2	40
+2	Source1,A3	0110	2	40
+3	Source1,B1	1001	2	40
+4	Source1,B2	1010	2	40
+5	Source1,B3	1100	2	40
+6	Source2,A1	1111	4	80
+sample_number	plate_and_well_position	mirror_codeword	transfers	volume (ul)
+0	Source1,A1	1100	2	40
+1	Source1,A2	1010	2	40
+2	Source1,A3	1001	2	40
+3	Source1,B1	0110	2	40
+4	Source1,B2	0101	2	40
+5	Source1,B3	0011	2	40
+6	Source2,A1	0000	0	0
+
+pool_number	plate_and_well_position	pooling_scheme	transfers	volume (ul)
+0	Destination,A1	0001111	4	80
+1	Destination,A2	0110011	4	80
+2	Destination,A3	1010101	4	80
+3	Destination,B1	1101001	4	80
+mirror_pool_number	plate_and_well_position	pooling_scheme	transfers	volume (ul)
+0	Destination_mirror,A1	1110000	3	60
+1	Destination_mirror,A2	1001100	3	60
+2	Destination_mirror,A3	0101010	3	60
+3	Destination_mirror,B1	0010110	3	60
+
+<IGNORE> The Biomek outfile filenames are given as test_.*_ rather than containing the real testname because test-run output files that will be compared to these reference files obviously must have different names.
+<REGEX># Corresponding Biomek command file\(s\): \[test_.*_Biomek_Source1_part1of3.csv, test_.*_Biomek_Source1_part2of3.csv, test_.*_Biomek_Source1_part3of3.csv\], \[test_.*_Biomek_Source2_part1of1.csv\], \[test_.*_Biomek_mirror_Source1_part1of3.csv, test_.*_Biomek_mirror_Source1_part2of3.csv, test_.*_Biomek_mirror_Source1_part3of3.csv\], \[test_.*_Biomek_mirror_Source2_part1of1.csv\]
+# Total 7 samples into 4 pools (and 4 mirror pools)
+transfers from samples: 2-4 per sample (40-80 ul), total 16 transfers
+mirror transfers from samples: 0-2 per sample (0-40 ul), total 12 transfers
+transfers into pools: 4-4 per pool (80-80 ul), total 16 transfers
+transfers into mirror pools: 3-3 per pool (60-60 ul), total 12 transfers

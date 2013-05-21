@@ -1,0 +1,27 @@
+<IGNORE> This is written to be compared to an output file using testing_utilities.compare_files_with_regex: All the <REGEX> lines will be matched to the output file lines as regular expressions instead of requiring the lines to be identical, and all the <IGNORE> lines (like this one) will be ignored in the comparison.
+<IGNORE> Remember the REGEX lines are now regular expressions, so some characters need to be escaped!
+<REGEX># Command line this file was generated with: .*
+<REGEX># Path: .*
+<REGEX># Date: .*,		User: .*,		System: .*
+<REGEX># Full options: \{.*\}
+
+sample_number	plate_and_well_position	codeword	transfers	volume (ul)
+0	Source,A1	001	1	20
+1	Source,A2	010	1	20
+2	Source,A3	011	2	40
+3	Source,A4	100	1	20
+4	Source,A5	101	2	40
+5	Source,A6	110	2	40
+6	Source,A7	111	3	60
+
+pool_number	plate_and_well_position	pooling_scheme	transfers	volume (ul)
+0	Destination,A1	0001111	4	80
+1	Destination,A2	0110011	4	80
+2	Destination,A3	1010101	4	80
+
+<IGNORE> The Biomek outfile filenames are given as test_.*_ rather than containing the real testname because test-run output files that will be compared to these reference files obviously must have different names.
+<IGNORE> I'm using symlinks to this outfile for multiple tests with different Biomek outfile setups (mirror or not, multiple or not), so I'm just leaving a general regex here
+<REGEX># Corresponding Biomek command file\(s\): .*
+# Total 7 samples into 3 pools (and 0 mirror pools)
+transfers from samples: 1-3 per sample (20-60 ul), total 12 transfers
+transfers into pools: 4-4 per pool (80-80 ul), total 12 transfers
