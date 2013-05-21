@@ -53,7 +53,7 @@ def read_codewords_from_file(infile_name, new_sample_names=None):
     (robotic_plate_transfer is in the ../../combinatorial_pooling/code folder.)
     Only reads the first "sample_number plate_and_well_position codeword transfers volume" table in the infile, ignores the rest.
 
-    Returns sample_number:codeword dictionary.
+    Returns sample_number:codeword dictionary, where codewords are binary_code_utilities.Binary_codeword objects.
 
     If new_sample_names isn't None, it should be an old_name:new_name dictionary - the new names will then be used in the output.
     """
@@ -75,21 +75,46 @@ def read_codewords_from_file(infile_name, new_sample_names=None):
                 break
             # for each line in the section, just grab sample name and codeword from each line and put in the data dict
             fields = line.strip('\n').split('\t')
-            try:                sample_name, codeword = fields[0], fields[2]
+            try:                sample_name, codeword_string = fields[0], fields[2]
             except IndexError:  raise DeconvolutionError("Cannot parse line! \"%s\""%line)
             # optionally convert original to new sample names
             if new_sample_names is not None:
                 sample_name = new_sample_names[sample_name]
-            sample_to_codeword[sample_name] = codeword
+            sample_to_codeword[sample_name] = binary_code_utilities.Binary_codeword(codeword_string)
     return sample_to_codeword
 
 
-def find_closest_codewords(____):
-    """ ___ """
-    pass
-    # useful stuff: binary_code_utilities.Hamming_distance, binary_code_utilities.bit_change_count (separate 0->1 and 1->0)
-    # TODO implement!
-    # TODO unit-test!
+def find_closest_codeword(ref_codeword, sample_to_codeword, min_distance_difference=1):
+    """ Returns the sample with the closest codeword match to the ref_codeword, and the Hamming distance.
+
+    Inputs: a 0/1 string codeword (a binary_code_utilities.Binary_codeword instance, or just a string), 
+    and a sample:codeword dictionary containing more such codewords (values must be unique).
+
+    Finds the sample(s) with codeword(s) with the lowest and second-lowest Hamming distance to the ref_codeword:
+        - if there is a single sample with the lowest distance, and the difference between the lowest and second-lowest distances 
+            is <=min_distance_difference, return the (closest_sample_name, min_Hamming_distance) tuple for the lowest.
+        - otherwise, return a (None, min_Hamming_distance) tuple.
+    """
+    # useful stuff in binary_code_utilities: Binary_codeword object, Hamming_distance, bit_change_count (separate 0->1 and 1->0)
+    # make sure codewords are unique
+    if sample_to_codeword is not None:
+        if len(set(sample_to_codeword.values())) != len(sample_to_codeword):
+            raise DeconvolutionError("All values in the sample_to_codeword dict must be unique!")
+    if min_distance_difference<1:
+        raise DeconvolutionError("min_distance_difference must be an integer 1 or higher!")
+    # LATER-TODO should probably rename Hamming_distance to be lowercase, since it's a function...
+    if not isinstance(ref_codeword, binary_code_utilities.Binary_codeword):
+        ref_codeword = binary_code_utilities.Binary_codeword(ref_codeword)
+    # Just calculate the Hamming distance to all expected codewords
+    #  MAYBE-TODO could probably optimize this a lot!  If only with caching...
+    sample_to_distance = {sample:binary_code_utilities.Hamming_distance(ref_codeword, codeword) 
+                                   for sample,codeword in sample_to_codeword.items()}
+    min_distance = min(sample_to_distance.values())
+    low_dist_samples = [sample for sample,distance in sample_to_distance.items() 
+                        if distance < min_distance+min_distance_difference]
+    if len(low_dist_samples)==1:    return (low_dist_samples[0], min_distance) 
+    else:                           return (None, min_distance) 
+    # TODO is this what I actually want to return, or something else?...  Could optionally return the full sorted distance_to_N_samples, or the top 2 of that, or something...
 
 
 ###################################################### Testing ###########################################################
@@ -160,25 +185,49 @@ class Testing(unittest.TestCase):
         self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_dataset=D, cutoff_per_mutant=M)
 
     def test__read_codewords_from_file(self):
+        # convenience function: compare real output (includes Binary_codeword objects) to simple string representation of dict
+        def _compare(output, expected_string):
+            assert len(output) == len(expected_string.split(' '))
+            for single_string in expected_string.split(' '):
+                key,val = single_string.split(':')
+                assert str(output[key]) == val
         # basic file
         infile1 = 'test_data/INPUT_codewords_1.txt'
         output1 = read_codewords_from_file(infile1)
-        assert output1 == {'0':'001', '1':'010', '2':'011', '3':'100', '4':'101', '5':'110', '6':'111'}
+        _compare(output1, '0:001 1:010 2:011 3:100 4:101 5:110 6:111')
         # a file with another code, and with a mirror-codeword section too
         infile2 = 'test_data/INPUT_codewords_2.txt'
         output2 = read_codewords_from_file(infile2)
-        assert output2 == {'0':'0011', '1':'0101', '2':'0110', '3':'1001', '4':'1010', '5':'1100', '6':'1111'}
+        _compare(output2, '0:0011 1:0101 2:0110 3:1001 4:1010 5:1100 6:1111')
         # trying out the new_sample_names optional dict
-        output1b = read_codewords_from_file(infile1, {str(x):x+10 for x in range(7)})
-        assert output1b == {10:'001', 11:'010', 12:'011', 13:'100', 14:'101', 15:'110', 16:'111'}
+        output1b = read_codewords_from_file(infile1, {str(x):str(x+10) for x in range(7)})
+        _compare(output1b, '10:001 11:010 12:011 13:100 14:101 15:110 16:111')
         output2b = read_codewords_from_file(infile2, {'0':'dA', '1':'dB', '2':'dC', '3':'dD', '4':'dE', '5':'dF', '6':'dG'})
-        assert output2b == {'dA':'0011', 'dB':'0101', 'dC':'0110', 'dD':'1001', 'dE':'1010', 'dF':'1100', 'dG':'1111'}
+        _compare(output2b, 'dA:0011 dB:0101 dC:0110 dD:1001 dE:1010 dF:1100 dG:1111')
         # fail if new_sample_names values are non-unique
         self.assertRaises(DeconvolutionError, read_codewords_from_file, infile1, {str(x):'1' for x in range(7)})
         self.assertRaises(DeconvolutionError, read_codewords_from_file, infile1, {str(x):min(x,5) for x in range(7)})
         self.assertRaises(DeconvolutionError, read_codewords_from_file, infile1, {str(x):('A' if x<3 else 'B') for x in range(7)})
 
+    def test__find_closest_codeword(self):
+        sample_codewords = {x[0]:binary_code_utilities.Binary_codeword(x[2:]) for x in 'A:1100 B:1010 C:0011 D:1000'.split()}
+        # diff 1 - if the top and second Hamming distance differ by 1, take the top one
+        inputs_outputs_diff1 = ('1100 A 0, 1010 B 0, 0011 C 0, 1000 D 0, '
+                                +'1111 None 2, 0000 D 1, 0110 None 2, 0111 C 1, 1110 None 1, 0001 C 1, 0100 A 1')
+        # diff 1 - if the top and second Hamming distance differ by 1, count that as None - they must differ by at least 2
+        inputs_outputs_diff2 = ('1100 None 0, 1010 None 0, 0011 C 0, 1000 None 0, '
+                                +'1111 None 2, 0000 None 1, 0110 None 2, 0111 C 1, 1110 None 1, 0001 None 1, 0100 None 1')
+        for diff, inputs_outputs in [(1, inputs_outputs_diff1), (2, inputs_outputs_diff2)]:
+            for input_output_str in inputs_outputs.split(', '):
+                input_str, sample, distance = input_output_str.split(' ')
+                distance = int(distance)
+                for input_val in (input_str, binary_code_utilities.Binary_codeword(input_str)):
+                    out_sample, out_dist = find_closest_codeword(input_val, sample_codewords, diff)
+                    if sample == 'None':    assert (out_sample is None and out_dist == distance)
+                    else:                   assert (out_sample, out_dist) == (sample, distance)
+
     # LATER-TODO add more unit-tests!
+
 
 
 if __name__=='__main__':
