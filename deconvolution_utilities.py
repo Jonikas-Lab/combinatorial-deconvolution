@@ -1,7 +1,16 @@
 #! /usr/bin/env python
 
 """
-Basic functions for combinatorial deconvolution of mutant pools, i.e. matching deepseq ___________
+Basic functions for combinatorial deconvolution of mutant pools, i.e. matching observed deepseq readcounts for each insertion in each pool to the expected presence/absence codewords of each original sample in each pool, to determine which sequenced insertion corresponds to which original sample.
+
+Basic experimental pipeline (and nomenclature):
+ 1) Biological SAMPLES are pooled into POOLS, based on predetermined CODEWORDS, which are then used as "EXPECTED" CODEWORDS.
+    (sometimes the "samples" are already pools themselves, and the "pools" are called superpools, but that doesn't matter here)
+    This is all done in the separate combinatorial_pooling package.
+ 2) After each POOL is sequenced, each INSERTION found in any pool will have an "OBSERVED" CODEWORD based on 
+    which pools it was present in.  Those "observed" codewords are then matched to the closest "expected" codeword, 
+    to determine which INSERTION corresponds to which original SAMPLE - this is what this module is for. 
+
  -- Weronika Patena, 2013
 """
 
@@ -15,36 +24,37 @@ import binary_code_utilities
 import mutant_analysis_classes
 
 class DeconvolutionError(Exception):
-    """ Exceptions in the binary_code_utilities module."""
+    """ Exceptions in the deconvolution_utilities module."""
     pass
 
 
-def readcounts_to_codewords(joint_dataset, one_cutoff=None, cutoff_per_dataset=None, cutoff_per_mutant=None):
-    """ Given a reads-per-mutant dataset and cutoffs, return mutant:sample_name:0/1 dict giving readcounts below/above cutoff.
+def readcounts_to_codewords(joint_dataset, one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None):
+    """ Given a reads-per-insertion dataset and cutoffs, determine which insertion was above/below cutoff in which pool. 
 
-    Joint_dataset should be a mutant_analysis_classes.Insertional_mutant_pool_dataset instance, multi-dataset.
+    Joint_dataset should be a mutant_analysis_classes.Insertional_mutant_pool_dataset instance, multi-dataset, 
+     with each member dataset corresponding to a pool.
 
     There are three ways of specifying readcount cutoffs, and exactly one should be provided:
-        - one_cutoff: a single number that will be used for all sample/mutant combinations
-        - cutoff_per_dataset: a dataset_name:number dict, so the cutoff depends on the dataset
-        - cutoff_per_mutant: a mutant_position:number dict, so the cutoff depends on the mutant
+        - one_cutoff: a single number that will be used for all pool/insertion combinations
+        - cutoff_per_pool: a pool_name:number dict, so the cutoff depends on the pool
+        - cutoff_per_insertion: a insertion_position:number dict, so the cutoff depends on the insertion
     
-    The output is a mutant_position:dataset_name:X nested dictionary, with X 0 if the mutant had <cutoff reads in the dataset, 
+    The output is an insertion_position:pool_name:X nested dictionary, with X 0 if the insertion had <cutoff reads in the pool, 
      and 1 if it had >=cutoff reads.
     """
-    if sum(x is not None for x in (one_cutoff, cutoff_per_dataset, cutoff_per_mutant)) != 1:
+    if sum(x is not None for x in (one_cutoff, cutoff_per_pool, cutoff_per_insertion)) != 1:
         raise DeconvolutionError("Must provide exactly one of the cutoff arguments!")
-    if one_cutoff is not None:          _get_cutoff = lambda dataset_name, mutant_position: one_cutoff
-    if cutoff_per_dataset is not None:  _get_cutoff = lambda dataset_name, mutant_position: cutoff_per_dataset[dataset_name]
-    if cutoff_per_mutant is not None:   _get_cutoff = lambda dataset_name, mutant_position: cutoff_per_mutant[mutant_position]
-    # TODO there should also be an option with the cutoff depending on BOTH dataset and mutant, somehow... Normalize the per-dataset readcounts before applying the per-mutant cutoff, or something?
-    mutant_presence_dict = {}
-    for mutant in joint_dataset:
-        mutant_presence_dict[mutant.position] = {}
-        for dataset_name,dataset_mutant_data in mutant.by_dataset.items():
-            if_present = int(bool(dataset_mutant_data.total_read_count >= _get_cutoff(dataset_name, mutant.position)))
-            mutant_presence_dict[mutant.position][dataset_name] = if_present
-    return mutant_presence_dict
+    if one_cutoff is not None:           _get_cutoff = lambda pool_name, insertion_position: one_cutoff
+    if cutoff_per_pool is not None:      _get_cutoff = lambda pool_name, insertion_position: cutoff_per_pool[pool_name]
+    if cutoff_per_insertion is not None: _get_cutoff = lambda pool_name, insertion_position: cutoff_per_insertion[insertion_position]
+    # TODO there should also be an option with the cutoff depending on BOTH pool and insertion, somehow... Normalize the per-pool readcounts before applying the per-insertion cutoff, or something?
+    insertion_presence_dict = {}
+    for insertion in joint_dataset:
+        insertion_presence_dict[insertion.position] = {}
+        for pool_name,pool_insertion_data in insertion.by_dataset.items():
+            if_present = int(bool(pool_insertion_data.total_read_count >= _get_cutoff(pool_name, insertion.position)))
+            insertion_presence_dict[insertion.position][pool_name] = if_present
+    return insertion_presence_dict
 
 
 def read_codewords_from_file(infile_name, new_sample_names=None):
@@ -55,12 +65,12 @@ def read_codewords_from_file(infile_name, new_sample_names=None):
 
     Returns sample_number:codeword dictionary, where codewords are binary_code_utilities.Binary_codeword objects.
 
-    If new_sample_names isn't None, it should be an old_name:new_name dictionary - the new names will then be used in the output.
+    If new_sample_names isn't None, it should be an old_number:new_name dictionary - the new names will then be used in the output.
     """
     if new_sample_names is not None:
         if len(set(new_sample_names.values())) != len(new_sample_names):
             raise DeconvolutionError("All values in the new_sample_names dict must be unique!")
-    sample_to_codeword = {}
+    sample_codewords = {}
     inside_relevant_section = False
     for line in open(infile_name):
         # skip lines until inside the section we want to parse
@@ -80,11 +90,11 @@ def read_codewords_from_file(infile_name, new_sample_names=None):
             # optionally convert original to new sample names
             if new_sample_names is not None:
                 sample_name = new_sample_names[sample_name]
-            sample_to_codeword[sample_name] = binary_code_utilities.Binary_codeword(codeword_string)
-    return sample_to_codeword
+            sample_codewords[sample_name] = binary_code_utilities.Binary_codeword(codeword_string)
+    return sample_codewords
 
 
-def find_closest_codeword(ref_codeword, sample_to_codeword, min_distance_difference=1):
+def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_difference=1):
     """ Returns the sample with the closest codeword match to the ref_codeword, and the Hamming distance.
 
     Inputs: a 0/1 string codeword (a binary_code_utilities.Binary_codeword instance, or just a string), 
@@ -97,9 +107,9 @@ def find_closest_codeword(ref_codeword, sample_to_codeword, min_distance_differe
     """
     # useful stuff in binary_code_utilities: Binary_codeword object, Hamming_distance, bit_change_count (separate 0->1 and 1->0)
     # make sure codewords are unique
-    if sample_to_codeword is not None:
-        if len(set(sample_to_codeword.values())) != len(sample_to_codeword):
-            raise DeconvolutionError("All values in the sample_to_codeword dict must be unique!")
+    if sample_codewords is not None:
+        if len(set(sample_codewords.values())) != len(sample_codewords):
+            raise DeconvolutionError("All values in the sample_codewords dict must be unique!")
     if min_distance_difference<1:
         raise DeconvolutionError("min_distance_difference must be an integer 1 or higher!")
     # LATER-TODO should probably rename Hamming_distance to be lowercase, since it's a function...
@@ -108,7 +118,7 @@ def find_closest_codeword(ref_codeword, sample_to_codeword, min_distance_differe
     # Just calculate the Hamming distance to all expected codewords
     #  MAYBE-TODO could probably optimize this a lot!  If only with caching...
     sample_to_distance = {sample:binary_code_utilities.Hamming_distance(ref_codeword, codeword) 
-                                   for sample,codeword in sample_to_codeword.items()}
+                                   for sample,codeword in sample_codewords.items()}
     min_distance = min(sample_to_distance.values())
     low_dist_samples = [sample for sample,distance in sample_to_distance.items() 
                         if distance < min_distance+min_distance_difference]
@@ -124,54 +134,54 @@ class Testing(unittest.TestCase):
 
     def test__readcounts_to_codewords(self):
         # convenience function for easier output checking:
-        def _convert_output(output, datasets, mutants):
-            """ Given mutant:datasets:0/1 output dict and lists of datasets and mutants in order, return string like '01 11'. """
-            mutant_codewords = {mutant.position: ''.join(str(output[mutant.position][dataset]) for dataset in datasets) 
-                                for mutant in mutants}
-            return ' '.join([mutant_codewords[mutant.position] for mutant in mutants])
-        # make a test case with 3 dataset and 3 mutants: readcounts 0,1,10; 9,20,0; 1,0,3
-        datasets = ['A', 'B', 'C']
+        def _convert_output(output, pools, insertions):
+            """ Given insertion:pool:0/1 output dict and lists of pools and insertions in order, return string like '01 11'. """
+            insertion_codewords = {insertion.position: ''.join(str(output[insertion.position][pool]) for pool in pools) 
+                                for insertion in insertions}
+            return ' '.join([insertion_codewords[insertion.position] for insertion in insertions])
+        # make a test case with 3 pools and 3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        pools = ['A', 'B', 'C']
         pos1 = mutant_analysis_classes.Insertion_position('chr1', '+', position_before=100, immutable=True)
         pos2 = mutant_analysis_classes.Insertion_position('chr2', '-', position_after=501, immutable=True)
         pos3 = mutant_analysis_classes.Insertion_position('chr3', '+', position_before=200, position_after=201, immutable=True)
-        mutant1 = mutant_analysis_classes.Insertional_mutant(pos1, multi_dataset=True)
-        mutant2 = mutant_analysis_classes.Insertional_mutant(pos2, multi_dataset=True)
-        mutant3 = mutant_analysis_classes.Insertional_mutant(pos3, multi_dataset=True)
-        mutants = [mutant1, mutant2, mutant3]
+        insertion1 = mutant_analysis_classes.Insertional_mutant(pos1, multi_dataset=True)
+        insertion2 = mutant_analysis_classes.Insertional_mutant(pos2, multi_dataset=True)
+        insertion3 = mutant_analysis_classes.Insertional_mutant(pos3, multi_dataset=True)
+        insertions = [insertion1, insertion2, insertion3]
         # the three numerical arguments to add_counts are total_reads,perfect_reads,sequence_variants - only the first matters.
-        mutant1.add_counts(0, 0, 0, dataset_name=datasets[0])
-        mutant1.add_counts(1, 1, 1, dataset_name=datasets[1])
-        mutant1.add_counts(10, 10, 1, dataset_name=datasets[2])
-        mutant2.add_counts(9, 9, 1, dataset_name=datasets[0])
-        mutant2.add_counts(20, 20, 1, dataset_name=datasets[1])
-        mutant2.add_counts(0, 0, 0, dataset_name=datasets[2])
-        mutant3.add_counts(1, 1, 1, dataset_name=datasets[0])
-        mutant3.add_counts(0, 0, 0, dataset_name=datasets[1])
-        mutant3.add_counts(3, 3, 1, dataset_name=datasets[2])
+        insertion1.add_counts(0, 0, 0, dataset_name=pools[0])
+        insertion1.add_counts(1, 1, 1, dataset_name=pools[1])
+        insertion1.add_counts(10, 10, 1, dataset_name=pools[2])
+        insertion2.add_counts(9, 9, 1, dataset_name=pools[0])
+        insertion2.add_counts(20, 20, 1, dataset_name=pools[1])
+        insertion2.add_counts(0, 0, 0, dataset_name=pools[2])
+        insertion3.add_counts(1, 1, 1, dataset_name=pools[0])
+        insertion3.add_counts(0, 0, 0, dataset_name=pools[1])
+        insertion3.add_counts(3, 3, 1, dataset_name=pools[2])
         dataset = mutant_analysis_classes.Insertional_mutant_pool_dataset(multi_dataset=True)
-        for mutant in mutants:  dataset.add_mutant(mutant)
+        for insertion in insertions:  dataset.add_mutant(insertion)
         # single cutoff (checking all relevant values)
-        #   3 mutants: readcounts 0,1,10; 9,20,0; 1,0,3
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=0), datasets, mutants)  == '111 111 111'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=1), datasets, mutants)  == '011 110 101'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=2), datasets, mutants)  == '001 110 001'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=3), datasets, mutants)  == '001 110 001'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=4), datasets, mutants)  == '001 110 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=9), datasets, mutants)  == '001 110 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=10), datasets, mutants) == '001 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=11), datasets, mutants) == '000 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=20), datasets, mutants) == '000 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=21), datasets, mutants) == '000 000 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=99), datasets, mutants) == '000 000 000'
-        # per-dataset cutoffs
-        #   3 mutants: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpD: _convert_output(readcounts_to_codewords(dataset, cutoff_per_dataset=CpD), datasets, mutants)
+        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=0), pools, insertions)  == '111 111 111'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=1), pools, insertions)  == '011 110 101'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=2), pools, insertions)  == '001 110 001'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=3), pools, insertions)  == '001 110 001'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=4), pools, insertions)  == '001 110 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=9), pools, insertions)  == '001 110 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=10), pools, insertions) == '001 010 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=11), pools, insertions) == '000 010 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=20), pools, insertions) == '000 010 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=21), pools, insertions) == '000 000 000'
+        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=99), pools, insertions) == '000 000 000'
+        # per-pool cutoffs
+        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        _output = lambda CpD: _convert_output(readcounts_to_codewords(dataset, cutoff_per_pool=CpD), pools, insertions)
         assert _output({'A':1, 'B':1, 'C':1}) == '011 110 101'
         assert _output({'A':3, 'B':10, 'C':1}) == '001 110 001'
         assert _output({'A':2, 'B':10, 'C':4}) == '001 110 000'
-        # per-mutant cutoffs
-        #   3 mutants: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpM: _convert_output(readcounts_to_codewords(dataset, cutoff_per_mutant=CpM), datasets, mutants)
+        # per-insertion cutoffs
+        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        _output = lambda CpM: _convert_output(readcounts_to_codewords(dataset, cutoff_per_insertion=CpM), pools, insertions)
         assert _output({pos1:1, pos2:1, pos3:1}) ==  '011 110 101'
         assert _output({pos1:2, pos2:2, pos3:1}) ==  '001 110 101'
         assert _output({pos1:2, pos2:2, pos3:4}) ==  '001 110 000'
@@ -179,10 +189,10 @@ class Testing(unittest.TestCase):
         # make sure that it only works with exactly one codeword argument - won't work with 0, any combination of 2, or all 3.
         O, D, M = 1, {'A':1, 'B':1, 'C':1}, {pos1:1, pos2:1, pos3:1}
         self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_dataset=D)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_mutant=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, cutoff_per_dataset=D, cutoff_per_mutant=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_dataset=D, cutoff_per_mutant=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_pool=D)
+        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_insertion=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, cutoff_per_pool=D, cutoff_per_insertion=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_codewords,dataset, one_cutoff=O,cutoff_per_pool=D,cutoff_per_insertion=M)
 
     def test__read_codewords_from_file(self):
         # convenience function: compare real output (includes Binary_codeword objects) to simple string representation of dict
@@ -209,7 +219,7 @@ class Testing(unittest.TestCase):
         self.assertRaises(DeconvolutionError, read_codewords_from_file, infile1, {str(x):min(x,5) for x in range(7)})
         self.assertRaises(DeconvolutionError, read_codewords_from_file, infile1, {str(x):('A' if x<3 else 'B') for x in range(7)})
 
-    def test__find_closest_codeword(self):
+    def test__find_closest_sample_codeword(self):
         sample_codewords = {x[0]:binary_code_utilities.Binary_codeword(x[2:]) for x in 'A:1100 B:1010 C:0011 D:1000'.split()}
         # diff 1 - if the top and second Hamming distance differ by 1, take the top one
         inputs_outputs_diff1 = ('1100 A 0, 1010 B 0, 0011 C 0, 1000 D 0, '
@@ -222,7 +232,7 @@ class Testing(unittest.TestCase):
                 input_str, sample, distance = input_output_str.split(' ')
                 distance = int(distance)
                 for input_val in (input_str, binary_code_utilities.Binary_codeword(input_str)):
-                    out_sample, out_dist = find_closest_codeword(input_val, sample_codewords, diff)
+                    out_sample, out_dist = find_closest_sample_codeword(input_val, sample_codewords, diff)
                     if sample == 'None':    assert (out_sample is None and out_dist == distance)
                     else:                   assert (out_sample, out_dist) == (sample, distance)
 
