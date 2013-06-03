@@ -16,10 +16,11 @@ Basic experimental pipeline (and nomenclature):
 
 # standard library
 from __future__ import division
-import sys
+import collections
 import unittest
 # other packages
 # my modules
+import general_utilities
 import binary_code_utilities
 import mutant_analysis_classes
 
@@ -28,10 +29,10 @@ class DeconvolutionError(Exception):
     pass
 
 
-def readcounts_to_codewords(joint_dataset, one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None):
+def readcounts_to_presence(insertion_pool_joint_dataset, one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None):
     """ Given a reads-per-insertion dataset and cutoffs, determine which insertion was above/below cutoff in which pool. 
 
-    Joint_dataset should be a mutant_analysis_classes.Insertional_mutant_pool_dataset instance, multi-dataset, 
+    Insertion_pool_joint_dataset should be a mutant_analysis_classes.Insertional_mutant_pool_dataset instance, multi-dataset, 
      with each member dataset corresponding to a pool.
 
     There are three ways of specifying readcount cutoffs, and exactly one should be provided:
@@ -48,13 +49,39 @@ def readcounts_to_codewords(joint_dataset, one_cutoff=None, cutoff_per_pool=None
     if cutoff_per_pool is not None:      _get_cutoff = lambda pool_name, insertion_position: cutoff_per_pool[pool_name]
     if cutoff_per_insertion is not None: _get_cutoff = lambda pool_name, insertion_position: cutoff_per_insertion[insertion_position]
     # TODO there should also be an option with the cutoff depending on BOTH pool and insertion, somehow... Normalize the per-pool readcounts before applying the per-insertion cutoff, or something?
-    insertion_presence_dict = {}
-    for insertion in joint_dataset:
-        insertion_presence_dict[insertion.position] = {}
+    insertion_pool_presence_dict = {}
+    for insertion in insertion_pool_joint_dataset:
+        insertion_pool_presence_dict[insertion.position] = collections.defaultdict(int)
         for pool_name,pool_insertion_data in insertion.by_dataset.items():
             if_present = int(bool(pool_insertion_data.total_read_count >= _get_cutoff(pool_name, insertion.position)))
-            insertion_presence_dict[insertion.position][pool_name] = if_present
-    return insertion_presence_dict
+            insertion_pool_presence_dict[insertion.position][pool_name] = if_present
+    return insertion_pool_presence_dict
+
+
+def presence_to_codewords(insertion_pool_presence_dict, pool_names_in_order=None, quiet=False):
+    """ Convert an insertion/pool absence/presence dict to insertion codeword dict.
+    
+    Given an insertion_pos:pool_name:0/1 dict and a list of pool names in order, 
+     return insertion_pos:pool_codeword dict, where pool_codeword is a binary_code_utilities.Binary_codeword object
+      based on the string of 0/1 values for the given insertion, for pools as given in pool_names_in_order.
+
+    pool_names_in_order does NOT have to include all the pool names in insertion_pool_presence_dict, 
+     but it cannot include any pools that aren't in it.
+    If pool_names_in_order is None, make it simply the sorted list of the pool names from insertion_pool_presence_dict.
+    """
+    # if pool order not given, take the basic sorted order (assuming each insertion_pool_presence_dict value has same keys)
+    if pool_names_in_order is None:
+        all_pool_names = set.union(*[set(pool_presence_dict.keys()) for pool_presence_dict in insertion_pool_presence_dict.values()])
+        pool_names_in_order = sorted(all_pool_names)
+        if not quiet:
+            print "Inferring pool name order: %s"%(', '.join(pool_names_in_order))
+    # convert the 0/1 values to codewords.
+    insertion_codewords = {}
+    for insertion_pos, pool_presence_dict in insertion_pool_presence_dict.items():
+        codeword_string = ''.join(str(pool_presence_dict[pool_name]) for pool_name in pool_names_in_order)
+        insertion_codewords[insertion_pos] = binary_code_utilities.Binary_codeword(codeword_string)
+    return insertion_codewords
+    # TODO unit-test!
 
 
 def read_codewords_from_file(infile_name, new_sample_names=None):
@@ -127,12 +154,83 @@ def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_di
     # TODO is this what I actually want to return, or something else?...  Could optionally return the full sorted distance_to_N_samples, or the top 2 of that, or something...
 
 
+def match_insertions_to_samples(insertion_codewords, sample_codewords, min_distance_difference=1):
+    """ Given observed insertion codewords and expected sample codewords, find best sample codeword match for each insertion.
+
+    First two inputs should be insertion_pos:codeword and sample_name:codeword dictionaries, 
+     with codewords beint binary_code_utilities.Binary_codeword instances.
+    The find_closest_sample_codeword function is used to match insertion to sample codewords; 
+     the min_distance_difference arg should be a number - see find_closest_sample_codeword for how it works. 
+
+    The outputs are an insertion_pos:sample_name and an insertion_pos:min_distance dictionary.
+    """
+    insertion_samples = {}
+    insertion_codeword_distances = {}
+    for insertion_pos, insertion_codeword in insertion_codewords.items():
+        best_match_sample, min_distance = find_closest_sample_codeword(insertion_codeword, sample_codewords, min_distance_difference)
+        insertion_samples[insertion_pos] = best_match_sample
+        insertion_codeword_distances[insertion_pos] = min_distance
+    return insertion_samples, insertion_codeword_distances
+    # TODO unit-test!
+
+
+def combinatorial_deconvolution(insertion_pool_joint_dataset, sample_codeword_filename, 
+                                one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None, 
+                                pool_names_in_order=None, min_distance_difference=1, new_sample_names=None):
+    """ ___
+    """
+    # TODO write docstring! Avoid repetition though.
+    sample_codewords = read_codewords_from_file(sample_codeword_filename, new_sample_names)
+    insertion_presence = readcounts_to_presence(insertion_pool_joint_dataset, one_cutoff, cutoff_per_pool, cutoff_per_insertion)
+    # MAYBE-TODO do we need to give pool_names_in_order to presence_to_codewords, or is the default all right?
+    insertion_codewords = presence_to_codewords(insertion_presence, pool_names_in_order)
+    insertion_samples, insertion_codeword_distances = match_insertions_to_samples(insertion_codewords, sample_codewords, 
+                                                                                  min_distance_difference)
+    return insertion_codewords, insertion_samples, insertion_codeword_distances
+    # TODO unit-test!
+
+
+def get_deconvolution_summary(insertion_samples, insertion_codeword_distances):
+    """ Given the outputs of match_insertions_to_samples or combinatorial_deconvolution, generate some summary numbers.
+
+    Inputs are insertion_pos:sample_name and insertion_pos:min_codeword_distance dictionaries; 
+        sample_name should be None if multiple samples matched.
+
+    Outputs are the total numbers of matched and unmatched insertions, 
+     and min_distance:N_insertions dicts for matched and unmatched insertions.
+    """
+    matched_insertion_distances = {i:d for i,d in insertion_codeword_distances.items() if insertion_samples[i] is not None}
+    unmatched_insertion_distances = {i:d for i,d in insertion_codeword_distances.items() if insertion_samples[i] is None}
+    N_total_insertions = len(insertion_samples)
+    N_matched_insertions = len(matched_insertion_distances)
+    N_unmatched_insertions = len(unmatched_insertion_distances)
+    matched_insertion_counts_by_distance = collections.Counter(matched_insertion_distances.values())
+    unmatched_insertion_counts_by_distance = collections.Counter(unmatched_insertion_distances.values())
+    return N_matched_insertions, N_unmatched_insertions, matched_insertion_counts_by_distance, unmatched_insertion_counts_by_distance
+    # TODO unit-test
+
+
+def print_deconvolution_summary(description, N_matched_insertions, N_unmatched_insertions, matched_insertion_counts_by_distance, 
+                                unmatched_insertion_counts_by_distance):
+    """ Nicely print the data generated by get_deconvolution_summary.
+    """
+    # MAYBE-TODO add a collapse_higher_than arg, so that "All insertion counts with min distances >collapse_higher_than will be counted together instead of separately."? (put that bit in docstring)
+    total_insertions = N_matched_insertions + N_unmatched_insertions
+    print "%s: %s total insertions, %s uniquely matched to a sample, %s matched to 2+ samples (unmatched)."%(description, 
+                total_insertions, general_utilities.value_and_percentages(N_matched_insertions, [total_insertions]), 
+                general_utilities.value_and_percentages(N_unmatched_insertions, [total_insertions]))
+    print " * matched insertions by codeword distance: %s"%(', '.join(['%s: %s'%(d,n) for d,n 
+                                                                       in sorted(matched_insertion_counts_by_distance.items())]))
+    print " * unmatched insertions by codeword distance: %s"%(', '.join(['%s: %s'%(d,n) for d,n 
+                                                                       in sorted(unmatched_insertion_counts_by_distance.items())]))
+
+
 ###################################################### Testing ###########################################################
 
 class Testing(unittest.TestCase):
     """ Runs unit-tests for this module. """
 
-    def test__readcounts_to_codewords(self):
+    def test__readcounts_to_presence(self):
         # convenience function for easier output checking:
         def _convert_output(output, pools, insertions):
             """ Given insertion:pool:0/1 output dict and lists of pools and insertions in order, return string like '01 11'. """
@@ -162,37 +260,37 @@ class Testing(unittest.TestCase):
         for insertion in insertions:  dataset.add_mutant(insertion)
         # single cutoff (checking all relevant values)
         #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=0), pools, insertions)  == '111 111 111'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=1), pools, insertions)  == '011 110 101'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=2), pools, insertions)  == '001 110 001'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=3), pools, insertions)  == '001 110 001'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=4), pools, insertions)  == '001 110 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=9), pools, insertions)  == '001 110 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=10), pools, insertions) == '001 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=11), pools, insertions) == '000 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=20), pools, insertions) == '000 010 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=21), pools, insertions) == '000 000 000'
-        assert _convert_output(readcounts_to_codewords(dataset, one_cutoff=99), pools, insertions) == '000 000 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=0), pools, insertions)  == '111 111 111'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=1), pools, insertions)  == '011 110 101'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=2), pools, insertions)  == '001 110 001'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=3), pools, insertions)  == '001 110 001'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=4), pools, insertions)  == '001 110 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=9), pools, insertions)  == '001 110 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=10), pools, insertions) == '001 010 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=11), pools, insertions) == '000 010 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=20), pools, insertions) == '000 010 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=21), pools, insertions) == '000 000 000'
+        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=99), pools, insertions) == '000 000 000'
         # per-pool cutoffs
         #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpD: _convert_output(readcounts_to_codewords(dataset, cutoff_per_pool=CpD), pools, insertions)
+        _output = lambda CpD: _convert_output(readcounts_to_presence(dataset, cutoff_per_pool=CpD), pools, insertions)
         assert _output({'A':1, 'B':1, 'C':1}) == '011 110 101'
         assert _output({'A':3, 'B':10, 'C':1}) == '001 110 001'
         assert _output({'A':2, 'B':10, 'C':4}) == '001 110 000'
         # per-insertion cutoffs
         #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpM: _convert_output(readcounts_to_codewords(dataset, cutoff_per_insertion=CpM), pools, insertions)
+        _output = lambda CpM: _convert_output(readcounts_to_presence(dataset, cutoff_per_insertion=CpM), pools, insertions)
         assert _output({pos1:1, pos2:1, pos3:1}) ==  '011 110 101'
         assert _output({pos1:2, pos2:2, pos3:1}) ==  '001 110 101'
         assert _output({pos1:2, pos2:2, pos3:4}) ==  '001 110 000'
         assert _output({pos1:2, pos2:10, pos3:4}) == '001 010 000'
         # make sure that it only works with exactly one codeword argument - won't work with 0, any combination of 2, or all 3.
         O, D, M = 1, {'A':1, 'B':1, 'C':1}, {pos1:1, pos2:1, pos3:1}
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_pool=D)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, one_cutoff=O, cutoff_per_insertion=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords, dataset, cutoff_per_pool=D, cutoff_per_insertion=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_codewords,dataset, one_cutoff=O,cutoff_per_pool=D,cutoff_per_insertion=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset)
+        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, one_cutoff=O, cutoff_per_pool=D)
+        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, one_cutoff=O, cutoff_per_insertion=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, cutoff_per_pool=D, cutoff_per_insertion=M)
+        self.assertRaises(DeconvolutionError, readcounts_to_presence,dataset, one_cutoff=O,cutoff_per_pool=D,cutoff_per_insertion=M)
 
     def test__read_codewords_from_file(self):
         # convenience function: compare real output (includes Binary_codeword objects) to simple string representation of dict
