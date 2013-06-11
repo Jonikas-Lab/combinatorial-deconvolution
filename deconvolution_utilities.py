@@ -16,11 +16,17 @@ Basic experimental pipeline (and nomenclature):
 
 # standard library
 from __future__ import division
+import os
 import collections
 import unittest
+import random
+import math
 # other packages
+import numpy
+import matplotlib.pyplot as mplt
+from matplotlib.font_manager import FontProperties
 # my modules
-import general_utilities
+import general_utilities, plotting_utilities
 import binary_code_utilities
 import mutant_analysis_classes
 
@@ -29,59 +35,109 @@ class DeconvolutionError(Exception):
     pass
 
 
-def readcounts_to_presence(insertion_pool_joint_dataset, one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None):
-    """ Given a reads-per-insertion dataset and cutoffs, determine which insertion was above/below cutoff in which pool. 
+
+# MAYBE-TODO should this be in mutant_utilities or something? Not really deconvolution-specific...
+def datasets_to_readcount_table(insertion_pool_joint_dataset, dataset_names_in_order, use_perfect_reads=False):
+    """ Given an insertional pool multi-dataset, return a insertion_position:readcount_list dict and a list of datasets in order.
 
     Insertion_pool_joint_dataset should be a mutant_analysis_classes.Insertional_mutant_pool_dataset instance, multi-dataset, 
      with each member dataset corresponding to a pool.
+    dataset_names_in_order should be a list of the dataset names in the order in which they should be listed in the outputs.
 
-    There are three ways of specifying readcount cutoffs, and exactly one should be provided:
-        - one_cutoff: a single number that will be used for all pool/insertion combinations
-        - cutoff_per_pool: a pool_name:number dict, so the cutoff depends on the pool
-        - cutoff_per_insertion: a insertion_position:number dict, so the cutoff depends on the insertion
-    
-    The output is an insertion_position:pool_name:X nested dictionary, with X 0 if the insertion had <cutoff reads in the pool, 
-     and 1 if it had >=cutoff reads.
+    The two outputs are:
+     1) a insertion_position:readcount_list, with keys being the positions of all the insertions in the original multi-dataset, 
+        and the values being lists of readcounts for that insertion position in each single dataset, 
+        in the order given by dataset_names_in_order.
+
+    If use_perfect_reads, the values in the final table will be perfect read counts; otherwise total read counts.
     """
-    if sum(x is not None for x in (one_cutoff, cutoff_per_pool, cutoff_per_insertion)) != 1:
-        raise DeconvolutionError("Must provide exactly one of the cutoff arguments!")
-    if one_cutoff is not None:           _get_cutoff = lambda pool_name, insertion_position: one_cutoff
-    if cutoff_per_pool is not None:      _get_cutoff = lambda pool_name, insertion_position: cutoff_per_pool[pool_name]
-    if cutoff_per_insertion is not None: _get_cutoff = lambda pool_name, insertion_position: cutoff_per_insertion[insertion_position]
-    # TODO there should also be an option with the cutoff depending on BOTH pool and insertion, somehow... Normalize the per-pool readcounts before applying the per-insertion cutoff, or something?
-    insertion_pool_presence_dict = {}
+    # MAYBE-TODO implement option for taking a list of datasets rather than a single joint dataset, too?  (would then also have to take a list of names, which I guess is the same as dataset_names_in_order)
+    insertion_readcount_table = {}
     for insertion in insertion_pool_joint_dataset:
-        insertion_pool_presence_dict[insertion.position] = collections.defaultdict(int)
-        for pool_name,pool_insertion_data in insertion.by_dataset.items():
-            if_present = int(bool(pool_insertion_data.total_read_count >= _get_cutoff(pool_name, insertion.position)))
-            insertion_pool_presence_dict[insertion.position][pool_name] = if_present
-    return insertion_pool_presence_dict
+        if use_perfect_reads:   readcounts = [insertion.by_dataset[dataset].perfect_read_count for dataset in dataset_names_in_order]
+        else:                   readcounts = [insertion.by_dataset[dataset].total_read_count for dataset in dataset_names_in_order]
+        insertion_readcount_table[insertion.position] = readcounts
+    return insertion_readcount_table
 
 
-def presence_to_codewords(insertion_pool_presence_dict, pool_names_in_order=None, quiet=False):
-    """ Convert an insertion/pool absence/presence dict to insertion codeword dict.
-    
-    Given an insertion_pos:pool_name:0/1 dict and a list of pool names in order, 
-     return insertion_pos:pool_codeword dict, where pool_codeword is a binary_code_utilities.Binary_codeword object
-      based on the string of 0/1 values for the given insertion, for pools as given in pool_names_in_order.
+# MAYBE-TODO should this be in mutant_utilities or something? Not really deconvolution-specific...
+def normalize_readcount_table(insertion_readcount_table, multiplier=10**6):
+    """ Given an insertion:dataset_readcount_list dict, normalize the readcounts to the totals for each dataset, IN PLACE.
 
-    pool_names_in_order does NOT have to include all the pool names in insertion_pool_presence_dict, 
-     but it cannot include any pools that aren't in it.
-    If pool_names_in_order is None, make it simply the sorted list of the pool names from insertion_pool_presence_dict.
+    Input should be same as the output from datasets_to_readcount_table.  Input will be modified in-place.
     """
-    # if pool order not given, take the basic sorted order (assuming each insertion_pool_presence_dict value has same keys)
-    if pool_names_in_order is None:
-        all_pool_names = set.union(*[set(pool_presence_dict.keys()) for pool_presence_dict in insertion_pool_presence_dict.values()])
-        pool_names_in_order = sorted(all_pool_names)
-        if not quiet:
-            print "Inferring pool name order: %s"%(', '.join(pool_names_in_order))
-    # convert the 0/1 values to codewords.
-    insertion_codewords = {}
-    for insertion_pos, pool_presence_dict in insertion_pool_presence_dict.items():
-        codeword_string = ''.join(str(pool_presence_dict[pool_name]) for pool_name in pool_names_in_order)
-        insertion_codewords[insertion_pos] = binary_code_utilities.Binary_codeword(codeword_string)
-    return insertion_codewords
+    dataset_readcount_totals = [sum(all_readcounts) for all_readcounts in zip(*insertion_readcount_table.values())]
+    for insertion_pos, dataset_readcounts in list(insertion_readcount_table.items()):
+        insertion_readcount_table[insertion_pos] = [readcount/total * multiplier
+                                                   for readcount,total in zip(dataset_readcounts,dataset_readcount_totals)]
+    # doesn't return anything - modifies the input in place.
     # TODO unit-test!
+
+
+def readcounts_to_presence__cutoffs(readcount_list, cutoffs):
+    """ Given a readcount list and a cutoff list (or one cutoff), return True/False list for whether readcount>=cutoff.
+    """
+    # if cutoffs is a single value, make it a list repeating that single value
+    try:                len(cutoffs)
+    except TypeError:   cutoffs = [cutoffs for _ in range(len(readcount_list))]
+    if not len(cutoffs)==len(readcount_list):
+        raise DeconvolutionError("readcount_list and cutoffs must be the same length!")
+    return [readcount>=cutoff for readcount,cutoff in zip(readcount_list, cutoffs)]
+
+
+def readcounts_to_presence__mutant_1(readcount_list, N_always_present, N_always_absent, overall_min=2, 
+                                     present_level_function=numpy.median, absent_level_function=numpy.median, 
+                                     cutoff_position=0.5, min_cutoff=1):
+    """ Given a readcount list for a mutant, use a complex method to decide which readcounts indicate presence/absence.
+
+    ___
+    """
+    # TODO give more details in docstring!
+    # TODO should cutoff_positon be a function instead?
+    if N_always_present+N_always_absent > len(readcount_list):
+        raise DeconvolutionError("N_always_present+N_always_absent should never be more than len(readcount_list)!")
+    if N_always_present<1 or N_always_absent<0:
+        raise DeconvolutionError("N_always_present must be >0, and N_always_absent >=0!")
+    sorted_readcounts = sorted(readcount_list)
+    if N_always_absent == 0:
+        absent_level = 0
+    else:
+        absent_readcounts = sorted_readcounts[:N_always_absent]
+        absent_level = absent_level_function(absent_readcounts)
+    present_readcounts = sorted_readcounts[-N_always_present:]
+    present_level = present_level_function(present_readcounts)
+    # TODO how exactly should the overall_min be applied?  
+    #  to throw away entire codewords as all-0, should we be comparing it to present_level, or to max?
+    if present_level < overall_min:
+        return [False for readcount in readcount_list]
+    if absent_level >= present_level:
+        raise DeconvolutionError("Absent level >= present level - should never happen! (%s and %s, based on %s and %s)"%(
+            absent_level, present_level, ([] if N_always_absent==0 else absent_readcounts), present_readcounts))
+    cutoff = absent_level + cutoff_position*(present_level-absent_level)
+    # adjust cutoff
+    cutoff = max(cutoff, min_cutoff)
+    # MAYBE-TODO what if cutoff ends up below max(absent_readcounts), or above min(present_readcounts)?  Fix?
+    # MAYBE-TODO should there be some minimum difference between absent_level and present_level?
+    return [readcount>=cutoff for readcount in readcount_list]
+
+
+def readcounts_to_codewords(insertion_readcount_table, conversion_function):
+    """ Given insertion:reads-per-pool data, return insertion:codeword dict showing which insertion was present in which pool. 
+
+    Insertion_readcount_table should be in the same format as the output of datasets_to_readcount_table.
+    Conversion_function should be a function that takes a readcount list and returns a True/False list indicating 
+     which of those readcounts are considered present/absent (choose one of the readcounts_to_presence__* functions above, 
+      and do a lambda to set the other arguments).  
+
+    The output is an insertion_position:presence_codeword dictionary with the same shape as the first input, 
+     with presence_codeword a binary_code_utilities.Binary_codeword 
+     representing whether a given insertion is considered present in each pool.
+    """
+    insertion_codeword_dict = {}
+    for insertion_pos, readcount_list in insertion_readcount_table.items():
+        presence_list = conversion_function(readcount_list)
+        insertion_codeword_dict[insertion_pos] = binary_code_utilities.Binary_codeword(presence_list)
+    return insertion_codeword_dict
 
 
 def read_codewords_from_file(infile_name, new_sample_names=None):
@@ -174,19 +230,23 @@ def match_insertions_to_samples(insertion_codewords, sample_codewords, min_dista
     # TODO unit-test!
 
 
-def combinatorial_deconvolution(insertion_pool_joint_dataset, sample_codeword_filename, 
-                                one_cutoff=None, cutoff_per_pool=None, cutoff_per_insertion=None, 
-                                pool_names_in_order=None, min_distance_difference=1, new_sample_names=None):
+def combinatorial_deconvolution(insertion_pool_joint_dataset, sample_codeword_filename, pool_names_in_order, conversion_function, 
+                                min_distance_difference=1, new_sample_names=None, 
+                                normalize_pool_readcounts=True, normalization_multiplier=10**6, use_perfect_reads=False, 
+                                return_readcounts=False):
     """ ___
     """
     # TODO write docstring! Avoid repetition though.
     sample_codewords = read_codewords_from_file(sample_codeword_filename, new_sample_names)
-    insertion_presence = readcounts_to_presence(insertion_pool_joint_dataset, one_cutoff, cutoff_per_pool, cutoff_per_insertion)
-    # MAYBE-TODO do we need to give pool_names_in_order to presence_to_codewords, or is the default all right?
-    insertion_codewords = presence_to_codewords(insertion_presence, pool_names_in_order)
+    insertion_readcount_table = datasets_to_readcount_table(insertion_pool_joint_dataset, pool_names_in_order, use_perfect_reads)
+    if normalize_pool_readcounts: normalize_readcount_table(insertion_readcount_table, normalization_multiplier)
+    insertion_codewords = readcounts_to_codewords(insertion_readcount_table, conversion_function)
     insertion_samples, insertion_codeword_distances = match_insertions_to_samples(insertion_codewords, sample_codewords, 
                                                                                   min_distance_difference)
-    return insertion_codewords, insertion_samples, insertion_codeword_distances
+    # MAYBE-TODO add more options for what is and isn't returned?  Or are those a bad idea?
+    return_data = (insertion_codewords, insertion_samples, insertion_codeword_distances)
+    if return_readcounts:   return_data = (insertion_readcount_table,) + return_data
+    return return_data
     # TODO unit-test!
 
 
@@ -219,10 +279,105 @@ def print_deconvolution_summary(description, N_matched_insertions, N_unmatched_i
     print "%s: %s total insertions, %s uniquely matched to a sample, %s matched to 2+ samples (unmatched)."%(description, 
                 total_insertions, general_utilities.value_and_percentages(N_matched_insertions, [total_insertions]), 
                 general_utilities.value_and_percentages(N_unmatched_insertions, [total_insertions]))
-    print " * matched insertions by codeword distance: %s"%(', '.join(['%s: %s'%(d,n) for d,n 
-                                                                       in sorted(matched_insertion_counts_by_distance.items())]))
-    print " * unmatched insertions by codeword distance: %s"%(', '.join(['%s: %s'%(d,n) for d,n 
-                                                                       in sorted(unmatched_insertion_counts_by_distance.items())]))
+    print " * matched insertions by codeword distance (% of matched, % of all): "
+    print "    %s"%(', '.join(['%s: %s'%(d,general_utilities.value_and_percentages(n, [N_matched_insertions, total_insertions]))
+                                         for d,n in sorted(matched_insertion_counts_by_distance.items())]))
+    print " * unmatched insertions by codeword distance (% of unmatched, % of all): "
+    print "    %s"%(', '.join(['%s: %s'%(d,general_utilities.value_and_percentages(n, [N_unmatched_insertions, total_insertions]))
+                                         for d,n in sorted(unmatched_insertion_counts_by_distance.items())]))
+
+
+################################################## Plotting the data #######################################################
+
+def absent_present_readcounts(readcounts, codeword):
+    """ Given a list of readcounts and a binary codeword, return separate lists of readcounts with 0s and with 1s in the codeword.
+    """
+    readcounts_and_presence = zip(readcounts, codeword.list())
+    absent_readcounts = [readcount for (readcount,presence) in readcounts_and_presence if not presence]
+    present_readcounts = [readcount for (readcount,presence) in readcounts_and_presence if presence]
+    return absent_readcounts, present_readcounts
+
+def plot_mutants_and_cutoffs(insertion_readcount_table, insertion_codewords, order='by_average_readcount', min_readcount=20, 
+                             N_rows=60, N_columns=13, N_insertions=None, x_scale='symlog', markersize=4, marker='d', 
+                             filename=None, title='insertion readcounts (white - absent, black - present)'):
+    """ ____
+
+    If filename is not given, plots will be interactive; otherwise they won't, and will be saved as multiple files.
+    """
+    # TODO write docstring!
+    # MAYBE-TODO add option to only plot insertions present in a specific dataset/list?
+    if filename is not None:
+        mplt.ioff()
+    # TODO add give option for insertion_codewords to be None - all readcounts treated the same, no present/absent distinction
+    # make a joint [(readcounts, codeword)] list, discarding insertion position data
+    # originally the insertion order is by position - reorder it if desired
+    # MAYBE-TODO add different order options?
+    readcounts_and_codewords = [(readcounts, insertion_codewords[insertion_pos])
+                                 for (insertion_pos,readcounts) in sorted(insertion_readcount_table.items())]
+    if order=='by_position':            pass
+    elif order=='random':               random.shuffle(readcounts_and_codewords)
+    elif order=='by_average_readcount':  readcounts_and_codewords.sort(key=lambda (r,c): numpy.mean(r))
+    elif order=='by_median_readcount':  readcounts_and_codewords.sort(key=lambda (r,c): numpy.median(r))
+    else:                               raise DeconvolutionError("Unknown order value %s!"%order)
+    # if desired, remove any data points that have no readcounts above min_readcount AND have empty codewords
+    if min_readcount is not None:       
+        readcounts_and_codewords = filter(lambda (r,c): max(r)>=min_readcount or c.weight(), 
+                                          readcounts_and_codewords)
+    # if desired, take some number of insertions, from the start
+    if N_insertions is not None:        readcounts_and_codewords = readcounts_and_codewords[:N_insertions]
+    N_per_page = N_rows*N_columns
+    N_pages = int(math.ceil(len(readcounts_and_codewords)/N_per_page))
+    max_readcount = max(max(readcounts) for (readcounts,_) in readcounts_and_codewords)
+    dot_plot_kwargs = dict(linestyle='None', markeredgecolor='k', markersize=markersize)
+    for page_N in range(N_pages):
+        mplt.figure(figsize=(16,12))
+        mplt.suptitle(title + '; page %s/%s'%(page_N+1, N_pages), y=0.92)      # y position to avoid wasting space
+        page_first_ins_N = page_N*N_per_page
+        for column_N in range(N_columns):
+            col_first_ins_N = page_first_ins_N + column_N*N_rows
+            if col_first_ins_N >= len(readcounts_and_codewords):
+                break
+            mplt.subplot(1, N_columns, column_N+1)
+            # plot a grey line for each insertion, with dots showing readcounts (filled if "present", unfilled if "absent")
+            # TODO currently we don't explicitly know the cutoffs, just the codewords!  Should I calculate (or save) the real cutoffs used, instead?  Or infer them based on the highest absent and lowest present readcount and plot those?
+            mplt.hlines(range(min(N_rows, len(readcounts_and_codewords)-col_first_ins_N)), 0, max_readcount, colors='0.7')
+            # accumulate all dot positions before plotting them all together for the whole column
+            absent_dot_positions_x, absent_dot_positions_y = [], []
+            present_dot_positions_x, present_dot_positions_y = [], []
+            for row_N in range(N_rows):
+                curr_ins_N = col_first_ins_N+row_N
+                if curr_ins_N >= len(readcounts_and_codewords):
+                    break
+                absent_readcounts, present_readcounts = absent_present_readcounts(*readcounts_and_codewords[curr_ins_N])
+                absent_dot_positions_x.extend(absent_readcounts)
+                absent_dot_positions_y.extend([row_N for _ in absent_readcounts])
+                present_dot_positions_x.extend(present_readcounts)
+                present_dot_positions_y.extend([row_N for _ in present_readcounts])
+            mplt.plot(absent_dot_positions_x, absent_dot_positions_y, marker, markerfacecolor='w', **dot_plot_kwargs)
+            mplt.plot(present_dot_positions_x, present_dot_positions_y, marker, markerfacecolor='k', **dot_plot_kwargs)
+            mplt.xscale(x_scale)
+            # remove the axes/etc we don't want, make things pretty
+            mplt.xlim(-1, max_readcount*2)
+            mplt.ylim(-1, N_rows)
+            mplt.yticks([], [])
+            mplt.xticks(mplt.xticks()[0], [])
+            ax = mplt.gca()
+            ax.spines['left'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.yaxis.set_ticks_position('none')
+            mplt.draw()
+            # TODO tighten layout
+            mplt.subplots_adjust(wspace=0.1)
+            #mplt.tight_layout() - this isn't great, messes up suptitle
+        if filename is not None:
+            basename, ext = os.path.splitext(filename)
+            pagenum_len = len(str(N_pages+1))
+            format_str = '_%%0%sd'%pagenum_len
+            plotting_utilities.savefig(basename + format_str%(page_N+1) + ext)
+            mplt.close()
+    if filename is not None:
+        mplt.ion()
+
 
 
 ###################################################### Testing ###########################################################
@@ -230,67 +385,120 @@ def print_deconvolution_summary(description, N_matched_insertions, N_unmatched_i
 class Testing(unittest.TestCase):
     """ Runs unit-tests for this module. """
 
-    def test__readcounts_to_presence(self):
-        # convenience function for easier output checking:
-        def _convert_output(output, pools, insertions):
-            """ Given insertion:pool:0/1 output dict and lists of pools and insertions in order, return string like '01 11'. """
-            insertion_codewords = {insertion.position: ''.join(str(output[insertion.position][pool]) for pool in pools) 
-                                for insertion in insertions}
-            return ' '.join([insertion_codewords[insertion.position] for insertion in insertions])
+    def _make_positions(self, N=3):
+        """ Help function - make three insertion positions, on chromosomes 1, 2, 3, varying strands/etc, immutable. """
+        positions = []
+        _I = mutant_analysis_classes.Insertion_position
+        positions.append(_I('chr1', '+', position_before=100, immutable=True))
+        positions.append(_I('chr2', '-', position_after=501, immutable=True))
+        positions.append(_I('chr3', '+', position_before=200, position_after=201, immutable=True))
+        positions.append(_I('chr4', '-', position_after=20, immutable=True))
+        positions.append(_I('chr5', '_', position_before=444, immutable=True))
+        return positions[:N]
+
+    def test__datasets_to_readcount_table(self):
         # make a test case with 3 pools and 3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
         pools = ['A', 'B', 'C']
-        pos1 = mutant_analysis_classes.Insertion_position('chr1', '+', position_before=100, immutable=True)
-        pos2 = mutant_analysis_classes.Insertion_position('chr2', '-', position_after=501, immutable=True)
-        pos3 = mutant_analysis_classes.Insertion_position('chr3', '+', position_before=200, position_after=201, immutable=True)
+        pos1, pos2, pos3 = self._make_positions()
         insertion1 = mutant_analysis_classes.Insertional_mutant(pos1, multi_dataset=True)
         insertion2 = mutant_analysis_classes.Insertional_mutant(pos2, multi_dataset=True)
         insertion3 = mutant_analysis_classes.Insertional_mutant(pos3, multi_dataset=True)
         insertions = [insertion1, insertion2, insertion3]
-        # the three numerical arguments to add_counts are total_reads,perfect_reads,sequence_variants - only the first matters.
-        insertion1.add_counts(0, 0, 0, dataset_name=pools[0])
-        insertion1.add_counts(1, 1, 1, dataset_name=pools[1])
-        insertion1.add_counts(10, 10, 1, dataset_name=pools[2])
-        insertion2.add_counts(9, 9, 1, dataset_name=pools[0])
+        # the three numerical arguments to add_counts are total_reads, perfect_reads, sequence_variants (not used).
+        insertion1.add_counts(0,  0,  0, dataset_name=pools[0])
+        insertion1.add_counts(1,  0,  1, dataset_name=pools[1])
+        insertion1.add_counts(10, 9,  1, dataset_name=pools[2])
+        insertion2.add_counts(9,  7,  1, dataset_name=pools[0])
         insertion2.add_counts(20, 20, 1, dataset_name=pools[1])
-        insertion2.add_counts(0, 0, 0, dataset_name=pools[2])
-        insertion3.add_counts(1, 1, 1, dataset_name=pools[0])
-        insertion3.add_counts(0, 0, 0, dataset_name=pools[1])
-        insertion3.add_counts(3, 3, 1, dataset_name=pools[2])
+        insertion2.add_counts(0,  0,  0, dataset_name=pools[2])
+        insertion3.add_counts(1,  0,  1, dataset_name=pools[0])
+        insertion3.add_counts(0,  0,  0, dataset_name=pools[1])
+        insertion3.add_counts(3,  3,  1, dataset_name=pools[2])
         dataset = mutant_analysis_classes.Insertional_mutant_pool_dataset(multi_dataset=True)
         for insertion in insertions:  dataset.add_mutant(insertion)
+        assert datasets_to_readcount_table(dataset, pools, use_perfect_reads=False) == {pos1:[0,1,10], pos2:[9,20,0], pos3:[1,0,3]}
+        assert datasets_to_readcount_table(dataset, pools, use_perfect_reads=True) ==  {pos1:[0,0,9],  pos2:[7,20,0], pos3:[0,0,3]}
+
+    def _make_basic_readcount_table(self):
+        # make a test case with 3 pools and 3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        pos1, pos2, pos3 = self._make_positions()
+        return {pos1:[0,1,10], pos2:[9,20,0], pos3:[1,0,3]}
+
+    def _simplify_codeword_output(self, insertion_codeword_dict, ins_positions):
+        """ Convenience function for easier processing of codeword tables - return them as a string in given order. """
+        return ' '.join([str(insertion_codeword_dict[ins_position]) for ins_position in ins_positions])
+
+    # Note: all the readcounts_to_presence__* tests below ALSO test readcounts_to_codewords, 
+    #  since that's just a convenience function to do readcounts_to_presence on a larger scale and change outputs to codewords.
+
+    def test__readcounts_to_presence__cutoffs(self):
+        # 3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
+        insertions = self._make_positions()
+        readcounts = self._make_basic_readcount_table()
+        _S = self._simplify_codeword_output
+        function_with_cutoff = lambda cutoff: (lambda x: readcounts_to_presence__cutoffs(x, cutoff))
         # single cutoff (checking all relevant values)
-        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=0), pools, insertions)  == '111 111 111'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=1), pools, insertions)  == '011 110 101'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=2), pools, insertions)  == '001 110 001'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=3), pools, insertions)  == '001 110 001'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=4), pools, insertions)  == '001 110 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=9), pools, insertions)  == '001 110 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=10), pools, insertions) == '001 010 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=11), pools, insertions) == '000 010 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=20), pools, insertions) == '000 010 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=21), pools, insertions) == '000 000 000'
-        assert _convert_output(readcounts_to_presence(dataset, one_cutoff=99), pools, insertions) == '000 000 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(0)), insertions)  == '111 111 111'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(1)), insertions)  == '011 110 101'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(2)), insertions)  == '001 110 001'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(3)), insertions)  == '001 110 001'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(4)), insertions)  == '001 110 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(9)), insertions)  == '001 110 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(10)), insertions) == '001 010 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(11)), insertions) == '000 010 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(20)), insertions) == '000 010 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(21)), insertions) == '000 000 000'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff(99)), insertions) == '000 000 000'
         # per-pool cutoffs
-        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpD: _convert_output(readcounts_to_presence(dataset, cutoff_per_pool=CpD), pools, insertions)
-        assert _output({'A':1, 'B':1, 'C':1}) == '011 110 101'
-        assert _output({'A':3, 'B':10, 'C':1}) == '001 110 001'
-        assert _output({'A':2, 'B':10, 'C':4}) == '001 110 000'
-        # per-insertion cutoffs
-        #   3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
-        _output = lambda CpM: _convert_output(readcounts_to_presence(dataset, cutoff_per_insertion=CpM), pools, insertions)
-        assert _output({pos1:1, pos2:1, pos3:1}) ==  '011 110 101'
-        assert _output({pos1:2, pos2:2, pos3:1}) ==  '001 110 101'
-        assert _output({pos1:2, pos2:2, pos3:4}) ==  '001 110 000'
-        assert _output({pos1:2, pos2:10, pos3:4}) == '001 010 000'
-        # make sure that it only works with exactly one codeword argument - won't work with 0, any combination of 2, or all 3.
-        O, D, M = 1, {'A':1, 'B':1, 'C':1}, {pos1:1, pos2:1, pos3:1}
-        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset)
-        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, one_cutoff=O, cutoff_per_pool=D)
-        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, one_cutoff=O, cutoff_per_insertion=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_presence, dataset, cutoff_per_pool=D, cutoff_per_insertion=M)
-        self.assertRaises(DeconvolutionError, readcounts_to_presence,dataset, one_cutoff=O,cutoff_per_pool=D,cutoff_per_insertion=M)
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff([1,1, 1])), insertions) == '011 110 101'
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff([3,10,1])), insertions) == '001 110 001' 
+        assert _S(readcounts_to_codewords(readcounts, function_with_cutoff([2,10,4])), insertions) == '001 110 000' 
+
+    def test__readcounts_to_presence__mutant_1(self):
+        # 3 insertions with various readcount numbers: perfect, noisy, absent, weird
+        # MAYBE-TODO try changing the order of the readcounts and making sure the results are the same (but in different order)?
+        insertions = self._make_positions(4)
+        readcounts = dict(zip(insertions, ([0,0,0,0,10,10,10], [0,1,1,3,8,10,15], [0,0,0,0,1,1,1], [0,1,2,3,4,5,6])))
+        _S = self._simplify_codeword_output
+        # arguments to readcounts_to_presence__mutant_1 are: readcount_list, N_always_present, N_always_absent, overall_min, 
+        #                                               present_level_function, absent_level_function, cutoff_position, min_cutoff
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 2, 2, 1, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000111 0001111'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 2, 2, 2, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        # upping the overall_min makes more all-0 results
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 6, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0000000'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 10, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0000000'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 11, numpy.median, numpy.median, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000000 0000000 0000000 0000000'
+        # upping min_cutoff makes more single 0s
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.median, numpy.median, 0.5, 5)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0000011'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.median, numpy.median, 0.5, 10)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000011 0000000 0000000'
+        # changing cutoff_position up/down from 0.5 - more/fewer 0s
+        #  (readcounts from above: [0,0,0,0,10,10,10], [0,1,1,3,8,10,15], [0,0,0,0,1,1,1], [0,1,2,3,4,5,6])
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.median, numpy.median, 0.8, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000011 0000000 0000011'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.median, numpy.median, 0.2, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0001111 0000000 0011111'
+        ### changing the level functions from median to max/min:
+        # mean of 2 numbers is the same as median; not true for 3 numbers, but in this case it ends up the same
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 2, 2, 2, numpy.mean, numpy.mean, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, numpy.mean, numpy.mean, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        # min/max - actually ends up pretty boring...
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, max, min, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        conv_function = lambda x: readcounts_to_presence__mutant_1(x, 3, 3, 2, min, max, 0.5, 1)
+        assert _S(readcounts_to_codewords(readcounts, conv_function), insertions)  == '0000111 0000111 0000000 0001111'
+        # TODO make more interesting min/max tests!  Or other functions
+        # TODO test N_always_absent == 0
 
     def test__read_codewords_from_file(self):
         # convenience function: compare real output (includes Binary_codeword objects) to simple string representation of dict
