@@ -21,6 +21,7 @@ import collections
 import unittest
 import random
 import math
+from collections import defaultdict
 from string import ascii_uppercase # this is 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', for well numbers
 # other packages
 import numpy
@@ -311,9 +312,6 @@ def combinatorial_deconvolution(insertion_pool_joint_dataset, sample_codeword_fi
     # TODO unit-test!
 
 
-# TODO write function to print deconvolution data!  Fields: plate, well, N_errors for plate and well, maybe average_readcount for plate and well, insertion position, probably gene/feature/annotation etc.  Also need to output insertions that were mapped to a plate but not a well, and vice versa - separate files?
-
-
 def get_deconvolution_summary(insertion_samples, insertion_codeword_distances):
     """ Given the outputs of match_insertions_to_samples or combinatorial_deconvolution, generate some summary numbers.
 
@@ -349,6 +347,39 @@ def print_deconvolution_summary(description, N_matched_insertions, N_unmatched_i
     print " * unmatched insertions by codeword distance (% of unmatched, % of all): "
     print "    %s"%(', '.join(['%s: %s'%(d,general_utilities.value_and_percentages(n, [N_unmatched_insertions, total_insertions]))
                                          for d,n in sorted(unmatched_insertion_counts_by_distance.items())]))
+
+
+def pick_best_parameters(deconv_data_by_parameters, N_errors_allowed, N_good_factor, percent_good_factor, max_N_high=None):
+    """ Pick the best deconvolution parameters, depending on what aspect of the result we want to optimize.
+
+    The deconv_data_by_parameters arg should be a dict with (N_high, N_low, cutoff_pos, overall_min) tuples as keys and 
+     (insertion_readcounts, insertion_codewords, insertion_samples, codeword_distances, summary) tuples as values.
+        (The first four should be outputs from combinatorial_deconvolution with return_readcounts=True, or the equivalent;
+         summary should be the output from get_deconvolution_summary.)
+
+    Look at the parameters/results in deconv_data_by_parameters.  
+    Pick the best set of parameters, optimizing a combination of two factors:
+        1) the total number of insertion positions mapped to expected codewords with N_errors_allowed or fewer errors
+        2) the percentage of those out of all uniquely mapped insertion positions.
+    These two numbers will be multiplied by N_good_factor and percent_good_factor respectively, 
+     and the resulting combination will be  maximized.
+
+    The output will be the deconv_data_by_parameters key that gives the optimal result.
+    """
+    parameters_to_result = {}
+    for parameters, deconv_data in deconv_data_by_parameters.items():
+        N_matched, N_unmatched, N_matched_by_dist, _ = summary = deconv_data[-1]
+        N_good_matched = sum(N_matched_by_dist[x] for x in range(N_errors_allowed+1))
+        percent_good_matched = N_good_matched/N_matched*100
+        final_result = N_good_matched*N_good_factor + percent_good_matched*percent_good_factor
+        if max_N_high is None or parameters[0]<=max_N_high:
+            parameters_to_result[parameters] = final_result
+    best_parameters = max(parameters_to_result.items(), key=lambda (p,r): r)[0]
+    return best_parameters
+        
+
+# TODO write function to print deconvolution data!  Fields: plate, well, best/good/decent category for plate and well (if there's more than one), N_errors for plate and well, maybe average_readcount for plate and well, insertion position, probably gene/feature/annotation etc.  Also need to output insertions that were mapped to a plate but not a well, and vice versa - separate files?  Or just give them "-" in place of plate/well in the same file?
+
 
 
 ################################################## Plotting the data #######################################################
@@ -442,6 +473,51 @@ def plot_mutants_and_cutoffs(insertion_readcount_table, insertion_codewords, ord
     if filename is not None:
         mplt.ion()
 
+
+def plot_parameter_space_1(deconv_data_by_parameters, N_errors_allowed, chosen_parameters, info='', 
+                           marker='x', alpha=1, colors_by_N_high='orangered black blue'.split()):
+    """ Given deconvolution data for various parameter sets, plot # and % of matched with <= N errors, and highlight chosen set.
+
+    The deconv_data_by_parameters arg should be a dict with (N_high, N_low, cutoff_pos, overall_min) tuples as keys and 
+     (insertion_readcounts, insertion_codewords, insertion_samples, codeword_distances, summary) tuples as values.
+        (The first four should be outputs from combinatorial_deconvolution with return_readcounts=True, or the equivalent;
+         summary should be the output from get_deconvolution_summary.)
+        
+    Each item of deconv_data_by_parameters will be plotted as a dot. 
+    The chosen_parameters should be one of the deconv_data_by_parameters keys - that dot will be highlighted.
+
+    N_errors_allowed should be an integer 0 or higher, and will be used to define what the axes are:
+        - x axis will the the number of insertion positions that were mapped to expected codewords with N or fewer errors
+        - y axis will be that number divided by the total number of uniquely mapped insertion positions (with any #errors)
+
+    Info will be used in the plot title.
+
+    The marker, alpha, and colors_by_N_high args set the physical appearance of the markers.
+
+    """
+    if not chosen_parameters in deconv_data_by_parameters.keys():
+        raise DeconvolutionError("Chosen parameters not present in result set! %s, %s"%(chosen_parameters, 
+                                                                                        deconv_data_by_parameters.keys()))
+    N_good_matched_val_dict, percent_good_matched_val_dict = defaultdict(list), defaultdict(list)
+    for parameters, deconv_data in deconv_data_by_parameters.items():
+        N_matched, N_unmatched, N_matched_by_dist, _ = summary = deconv_data[-1]
+        N_good_matched = sum(N_matched_by_dist[x] for x in range(N_errors_allowed+1))
+        percent_good_matched = N_good_matched/N_matched*100
+        N_good_matched_val_dict[parameters[0]].append(N_good_matched)
+        percent_good_matched_val_dict[parameters[0]].append(percent_good_matched)
+        if parameters==chosen_parameters:
+            chosen_N_good_matched, chosen_percent_good_matched = N_good_matched, percent_good_matched
+    min_N_high = min(N_good_matched_val_dict.keys())
+    for N_high,N_good_matched_vals in N_good_matched_val_dict.items():
+        mplt.plot(N_good_matched_vals, percent_good_matched_val_dict[N_high], 
+                  marker=marker, color=colors_by_N_high[N_high-min_N_high], markersize=5, alpha=alpha, linestyle='None')
+    mplt.plot(chosen_N_good_matched, chosen_percent_good_matched,  
+              marker='o', markerfacecolor='None', markeredgecolor='r', markersize=10, markeredgewidth=2, linestyle='None')
+    mplt.title("Deconvolution results for different parameters%s.\n Allowing %s errors; red circle marks chosen parameters."%(
+        ': %s'%info if info else '', N_errors_allowed))
+    mplt.xlabel("number of insertions mapped with at most %s errors"%N_errors_allowed)
+    mplt.ylabel("% of those out of all uniquely mapped insertions")
+    # MAYBE-TODO could try changing the marker shape/size/color to reflect the other parameters?
 
 
 ###################################################### Testing ###########################################################
