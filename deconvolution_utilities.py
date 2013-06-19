@@ -63,7 +63,7 @@ def get_original_384_well_numbers(sample_number, zero_padding=True):
          - sample 13 would be plate1-B1, i.e. original well C1
          - sample 14 would be plate1-B2, i.e. original well C3
             ...
-         - sample 97 would be plate1-H11, i.e. original well O21
+         - sample 95 would be plate1-H11, i.e. original well O21
          - sample 96 would be plate1-H12, i.e. original well O23
             ...
          - sample 97 would be plate2-A1, i.e. original well A2
@@ -276,7 +276,7 @@ def match_insertions_to_samples(insertion_codewords, sample_codewords, min_dista
     The find_closest_sample_codeword function is used to match insertion to sample codewords; 
      the min_distance_difference arg should be a number - see find_closest_sample_codeword for how it works. 
 
-    The outputs are an insertion_pos:sample_name and an insertion_pos:min_distance dictionary.
+    The outputs are an insertion_pos:sample_name (or None if no match) and an insertion_pos:codeword_distance dictionary.
     """
     # TODO add option for how many errors should be allowed at all, rather than just always returning the closest unique match, even if it has 4 errors!  Maybe allow splitting that into 0->1 and 1->0 errors separately.
     insertion_samples = {}
@@ -378,8 +378,134 @@ def pick_best_parameters(deconv_data_by_parameters, N_errors_allowed, N_good_fac
     return best_parameters
         
 
-# TODO write function to print deconvolution data!  Fields: plate, well, best/good/decent category for plate and well (if there's more than one), N_errors for plate and well, maybe average_readcount for plate and well, insertion position, probably gene/feature/annotation etc.  Also need to output insertions that were mapped to a plate but not a well, and vice versa - separate files?  Or just give them "-" in place of plate/well in the same file?
+def merge_deconvolution_levels(best_data, good_data, decent_data):
+    """ Merge best/good/decent deconvolution data: take best set w/ 0 errors, remaining good set w/ 0-1 errors, remaining decent set.
 
+    All three args should be (insertion_readcounts, insertion_codewords, insertion_samples, insertion_codeword_distances, *extras) 
+     tuples: the first four elements should be dictionaries with insertion_position as keys (and values being readcount list, 
+      observed codeword, best-matched sample, and #errors between observed codeword and that of the sample) - outputs from 
+      combinatorial_deconvolution with return_readcounts=True, or the equivalent; additional elements will be ignored.
+
+    Output will be a dictionary with insertion positions as keys - the full joint set of keys from the three inputs, 
+     but excluding ones with no unique match - and 5-tuples with the following elements as values:
+        1) readcount list
+        2) observed codeword
+        3) name of sample with the best-matched expected codeword (or None if no unique match)
+        4) number of differences between observed codeword and that of the best-match sample(s)
+        5) group name:  "best" if that position had a 0-error match in best_data,
+                        else "good" if it had a 0-1 error match in good_data,
+                        else "decent" if it had a 0-2 error match in decent_data, 
+                        else "poor" if it has a unique match with 3+ errors in decent_data.
+    """
+    all_data = {}
+    def _use_insertion_data(insertion_pos, source, groupname):
+        all_data[insertion_pos] = (source[0][insertion_pos], source[1][insertion_pos], source[2][insertion_pos], 
+                                   source[3][insertion_pos], groupname)
+    all_insertions = set(best_data[0].keys()) | set(good_data[0].keys()) | set(decent_data[0].keys())
+    for insertion_pos in all_insertions:
+        if best_data[3][insertion_pos] == 0:            _use_insertion_data(insertion_pos, best_data, "best")
+        elif good_data[3][insertion_pos] <=1:           _use_insertion_data(insertion_pos, good_data, "good")
+        elif decent_data[3][insertion_pos] <=2:         _use_insertion_data(insertion_pos, decent_data, "decent")
+        elif decent_data[2][insertion_pos] is not None: _use_insertion_data(insertion_pos, decent_data, "poor")
+    return all_data
+    # TODO unit-test!  I had an error in here!
+
+
+def get_genes_and_annotation(insertion_position_set, genefile, annotation_file=None, if_standard_Cre_file=True):
+    """ Make mutant dataset that gives gene/feature/annotation for each insertion position (all readcounts are 0). 
+
+    Make mutant_analysis_classes.Insertional_mutant_pool_dataset containing zero-readcount mutants for each position, 
+     then look up gene/feature for the position and annotation for the gene based on genefile and annotation_file.
+    """
+    dataset = mutant_analysis_classes.Insertional_mutant_pool_dataset()
+    # make dataset containing zero-readcount mutants for each position
+    #  (using get_mutant rather than add_mutant because it's faster)
+    for insertion_pos in insertion_position_set:
+        dataset.get_mutant(insertion_pos)
+    dataset.find_genes_for_mutants(genefile, detailed_features=True)
+    if annotation_file is not None:
+        dataset.add_gene_annotation(annotation_file, if_standard_Cre_file)
+    return dataset
+
+
+def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well, outfilename='', 
+                                 genefile=None, annotation_file=None, if_standard_Cre_file=True):
+    """ Generate single table with plate/well deconvolution results, and including gene/feature/annotation if available.
+
+    Dict_full_results_* should be a name:results dict, where name is a description like 5'/3' and results is the output of 
+     merge_deconvolution_levels; the key set must be the same for both.  Outfilename is the path/name of the output file; 
+     genefile is the path/name of the gff file giving gene locations; annotation_file is the path/name of the tab-separated
+     gene annotation file; if_standard_Cre_file should be True if it's in normal Phytozome annotation format, False otherwise.
+
+    Return (header, full_data_table) tuple: full_data_table is a list of mapped insertion position data lists, with the information 
+     for each insertion position arranged in fields described by the header; full_data_table is sorted by plate/well.
+
+    If outfilename is given, also print the data to a tab-separated file. 
+    """
+    if not dict_full_results_plate.keys() == dict_full_results_well.keys(): 
+        raise DeconvolutionError("Plate and well data have different subsets! %s, %s"%(dict_full_results_plate.keys(),
+                                                                                       dict_full_results_well.keys()))
+    # convenience function to get plate/well data if it's present, otherwise defaults
+    def _get_deconv_data_for_ins(insertion_pos, deconv_dict):
+        try:                ins_data = deconv_dict[insertion_pos]
+        except KeyError:    ins_data = None
+        if ins_data is not None:
+            readcount_list, _, sample_name, N_errors, category = ins_data
+            return (sample_name, category, N_errors, numpy.average(readcount_list))
+        else:
+            return ('-', 'unmapped', '-', None)
+
+    # grab all insertion position and side combinations - we can't just go by insertion positions, because there may be
+    #  5' and 3' results with the same position!  (okay, actually not entirely, but who knows)
+    insertions_and_sides = []
+    for side in dict_full_results_plate.keys():
+        for insertion_pos in set(dict_full_results_plate[side].keys() + dict_full_results_well[side].keys()):
+            insertions_and_sides.append((insertion_pos, side))
+    # now grab all the deconvolution information
+    insertion_basics = []
+    for insertion_pos, side in insertions_and_sides:
+        plate,plate_category,plate_errors,plate_avg_readcount =_get_deconv_data_for_ins(insertion_pos, dict_full_results_plate[side])
+        well, well_category, well_errors, well_avg_readcount = _get_deconv_data_for_ins(insertion_pos, dict_full_results_well[side])
+        insertion_basics.append((plate, well, side, insertion_pos, plate_category, well_category, plate_errors, well_errors, 
+                                 plate_avg_readcount, well_avg_readcount))
+    # grab gene/feature/annotation info through making a proper mutant-position dataset
+    all_insertion_positions = set.union(*[set(d.keys()) for d in dict_full_results_plate.values() + dict_full_results_well.values()])
+    if genefile:
+        dataset_with_gene_info = get_genes_and_annotation(all_insertion_positions, genefile, annotation_file, if_standard_Cre_file)
+    # make header
+    # MAYBE-TODO is that the best field order?
+    header = 'plate well plate_category well_category plate_errors well_errors side'.split()
+    header += 'chromosome strand min_position full_position'.split()
+    if genefile:
+        header += 'gene orientation feature'.split()
+    header += 'plate_avg_readcount well_avg_readcount'.split()
+    if annotation_file:
+        header += dataset_with_gene_info.gene_annotation_header
+        missing_gene_annotation_data = tuple(['NO GENE DATA'] + ['' for x in dataset_with_gene_info.gene_annotation_header[:-1]])
+    # make full data table
+    full_data_table = []
+    _sort_dash_last = lambda x: 'zzz' if x=='-' else x
+    _sort_function = lambda (p,w,s,i,c,d,e,f,a,b): ((_sort_dash_last(p), _sort_dash_last(w), 1 if s=="5'" else 2, i))
+    for insertion_data in sorted(insertion_basics, key = _sort_function):
+        line_fields = insertion_data[:2] + insertion_data[4:8] + (insertion_data[2],)
+        pos = insertion_data[3]
+        line_fields += (pos.chromosome, pos.strand, pos.min_position, pos.full_position)
+        if genefile:
+            mutant = dataset_with_gene_info.get_mutant(pos)
+            line_fields += (mutant.gene, mutant.orientation, mutant.gene_feature)
+        line_fields += insertion_data[8:10]
+        if annotation_file:
+            if mutant.gene_annotation:  line_fields += tuple(mutant.gene_annotation)
+            else:                       line_fields += missing_gene_annotation_data
+        full_data_table.append(line_fields)
+    # print to file if desired
+    if outfilename:
+        with open(outfilename, 'w') as OUTFILE:
+            OUTFILE.write('# ' + '\t'.join(header) + '\n')
+            for insertion_data in full_data_table:
+                OUTFILE.write('\t'.join([str(x) for x in insertion_data]) + '\n')
+    return header, full_data_table
+    # TODO unit-test?
 
 
 ################################################## Plotting the data #######################################################
@@ -391,6 +517,7 @@ def absent_present_readcounts(readcounts, codeword):
     absent_readcounts = [readcount for (readcount,presence) in readcounts_and_presence if not presence]
     present_readcounts = [readcount for (readcount,presence) in readcounts_and_presence if presence]
     return absent_readcounts, present_readcounts
+
 
 def plot_mutants_and_cutoffs(insertion_readcount_table, insertion_codewords, order='by_average_readcount', min_readcount=20, 
                              N_rows=60, N_columns=13, N_insertions=None, x_scale='symlog', markersize=4, marker='d', 
