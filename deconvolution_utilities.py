@@ -647,6 +647,14 @@ def plot_parameter_space_1(deconv_data_by_parameters, N_errors_allowed, chosen_p
     # MAYBE-TODO could try changing the marker shape/size/color to reflect the other parameters?
 
 
+def plot_plate_well_positions(well_list, marker='o', markersize=5, markeredgecolor='None', markerfacecolor='black', offset=0):
+    """ Plot the given well_list on a 384-well plate. """
+    columns = [int(well[1:]) for well in well_list]
+    rows = [ord(well[0]) for well in well_list]
+    mplt.plot([x+offset for x in columns], rows, marker, 
+              markersize=markersize, markeredgecolor=markeredgecolor, markerfacecolor=markerfacecolor)
+
+
 ###################################################### Testing ###########################################################
 
 class Testing(unittest.TestCase):
