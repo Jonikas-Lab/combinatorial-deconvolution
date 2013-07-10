@@ -416,12 +416,14 @@ def merge_deconvolution_levels(best_data, good_data, decent_data):
     # TODO unit-test!  I had an error in here!
 
 
-def get_genes_and_annotation(insertion_position_set, genefile, annotation_file=None, if_standard_Cre_file=True):
+def get_genes_and_annotation(insertion_position_set, genefile, annotation_file=None, standard_Phytozome_file_version=None):
     """ Make mutant dataset that gives gene/feature/annotation for each insertion position (all readcounts are 0). 
 
     Make mutant_analysis_classes.Insertional_mutant_pool_dataset containing zero-readcount mutants for each position, 
      then look up gene/feature for the position and annotation for the gene based on genefile and annotation_file.
     """
+    # Note: this is separate from get_flanking_seqs because it should be still possible to get the gene annotation when we 
+    #           DON'T have flanking seq data!
     dataset = mutant_analysis_classes.Insertional_mutant_pool_dataset()
     # make dataset containing zero-readcount mutants for each position
     #  (using get_mutant rather than add_mutant because it's faster)
@@ -429,23 +431,26 @@ def get_genes_and_annotation(insertion_position_set, genefile, annotation_file=N
         dataset.get_mutant(insertion_pos)
     dataset.find_genes_for_mutants(genefile, detailed_features=True)
     if annotation_file is not None:
-        dataset.add_gene_annotation(annotation_file, if_standard_Cre_file)
+        dataset.add_gene_annotation(annotation_file, standard_Phytozome_file_version)
     return dataset
 
 
-def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well, outfilename='', 
-                                 genefile=None, annotation_file=None, if_standard_Cre_file=True):
+def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well, outfilename='', genefile=None, 
+                                 annotation_file=None, standard_Phytozome_file_version=None, flanking_sequence_data=None):
     """ Generate single table with plate/well deconvolution results, and including gene/feature/annotation if available.
 
     Dict_full_results_* should be a name:results dict, where name is a description like 5'/3' and results is the output of 
-     merge_deconvolution_levels; the key set must be the same for both.  Outfilename is the path/name of the output file; 
-     genefile is the path/name of the gff file giving gene locations; annotation_file is the path/name of the tab-separated
-     gene annotation file; if_standard_Cre_file should be True if it's in normal Phytozome annotation format, False otherwise.
+     merge_deconvolution_levels; the key set must be the same for both.  
+    Genefile is the path/name of the gff file giving gene locations; annotation_file is the path/name of the tab-separated
+     gene annotation file; standard_Phytozome_file_version should be 4 or 5 if it's in normal Phytozome annotation format 
+     for v4.3 or v5 chlamy genome, None otherwise.
+    Flanking_seq_data should be a mutant dataset that will be used to get the most common observed flanking sequence for each 
+     insertion, or None if flanking sequences are not needed in the file.
 
     Return (header, full_data_table) tuple: full_data_table is a list of mapped insertion position data lists, with the information 
      for each insertion position arranged in fields described by the header; full_data_table is sorted by plate/well.
 
-    If outfilename is given, also print the data to a tab-separated file. 
+    If outfilename is given, also print the data to a tab-separated file with that name. 
     """
     if not dict_full_results_plate.keys() == dict_full_results_well.keys(): 
         raise DeconvolutionError("Plate and well data have different subsets! %s, %s"%(dict_full_results_plate.keys(),
@@ -473,10 +478,12 @@ def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well
         well, well_category, well_errors, well_avg_readcount = _get_deconv_data_for_ins(insertion_pos, dict_full_results_well[side])
         insertion_basics.append((plate, well, side, insertion_pos, plate_category, well_category, plate_errors, well_errors, 
                                  plate_avg_readcount, well_avg_readcount))
-    # grab gene/feature/annotation info through making a proper mutant-position dataset
+    # grab gene/feature/annotation info through making a proper mutant-position dataset 
+    #  (merging 5'/3' - we already have the correct insertion positions as +/-, so we can treat them the same now)
     all_insertion_positions = set.union(*[set(d.keys()) for d in dict_full_results_plate.values() + dict_full_results_well.values()])
     if genefile:
-        dataset_with_gene_info = get_genes_and_annotation(all_insertion_positions, genefile, annotation_file, if_standard_Cre_file)
+        dataset_with_gene_info = get_genes_and_annotation(all_insertion_positions, genefile, 
+                                                          annotation_file, standard_Phytozome_file_version)
     # make header
     # MAYBE-TODO is that the best field order?
     header = 'plate well plate_category well_category plate_errors well_errors side'.split()
@@ -484,6 +491,8 @@ def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well
     if genefile:
         header += 'gene orientation feature'.split()
     header += 'plate_avg_readcount well_avg_readcount'.split()
+    if flanking_sequence_data:
+        header += 'flanking_seq'.split()
     if annotation_file:
         header += dataset_with_gene_info.gene_annotation_header
         missing_gene_annotation_data = tuple(['NO GENE DATA'] + ['' for x in dataset_with_gene_info.gene_annotation_header[:-1]])
@@ -492,13 +501,16 @@ def full_plate_well_gene_results(dict_full_results_plate, dict_full_results_well
     _sort_dash_last = lambda x: 'zzz' if x=='-' else x
     _sort_function = lambda (p,w,s,i,c,d,e,f,a,b): ((_sort_dash_last(p), _sort_dash_last(w), 1 if s=="5'" else 2, i))
     for insertion_data in sorted(insertion_basics, key = _sort_function):
-        line_fields = insertion_data[:2] + insertion_data[4:8] + (insertion_data[2],)
+        side = insertion_data[2]
+        line_fields = insertion_data[:2] + insertion_data[4:8] + (side,)
         pos = insertion_data[3]
         line_fields += (pos.chromosome, pos.strand, pos.min_position, pos.full_position)
         if genefile:
             mutant = dataset_with_gene_info.get_mutant(pos)
             line_fields += (mutant.gene, mutant.orientation, mutant.gene_feature)
         line_fields += insertion_data[8:10]
+        if flanking_sequence_data:
+            line_fields += (flanking_sequence_data[side].get_mutant(pos).get_main_sequence()[0], )
         if annotation_file:
             if mutant.gene_annotation:  line_fields += tuple(mutant.gene_annotation)
             else:                       line_fields += missing_gene_annotation_data
