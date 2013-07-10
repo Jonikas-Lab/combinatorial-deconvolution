@@ -235,7 +235,7 @@ def read_codewords_from_file(infile_name, new_sample_names=None):
     return sample_codewords
 
 
-def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_difference=1):
+def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_difference=1, ignore_diff_lengths=False):
     """ Returns the sample with the closest codeword match to the ref_codeword, and the Hamming distance.
 
     Inputs: a 0/1 string codeword (a binary_code_utilities.Binary_codeword instance, or just a string), 
@@ -246,6 +246,7 @@ def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_di
             is <=min_distance_difference, return the (closest_sample_name, min_Hamming_distance) tuple for the lowest.
         - otherwise, return a (None, min_Hamming_distance) tuple.
     """
+    # TODO add docstring and unit-test for ignore_diff_lengths!  Ignore codeword with length mismatches.
     # useful stuff in binary_code_utilities: Binary_codeword object, Hamming_distance, bit_change_count (separate 0->1 and 1->0)
     # make sure codewords are unique
     if sample_codewords is not None:
@@ -258,7 +259,11 @@ def find_closest_sample_codeword(ref_codeword, sample_codewords, min_distance_di
         ref_codeword = binary_code_utilities.Binary_codeword(ref_codeword)
     # Just calculate the Hamming distance to all expected codewords
     #  MAYBE-TODO could probably optimize this a lot!  If only with caching...
-    sample_to_distance = {sample:binary_code_utilities.Hamming_distance(ref_codeword, codeword) 
+    if ignore_diff_lengths:
+        sample_to_distance = {sample:binary_code_utilities.Hamming_distance(ref_codeword, codeword) 
+                                   for sample,codeword in sample_codewords.items() if len(codeword)==len(ref_codeword)}
+    else:
+        sample_to_distance = {sample:binary_code_utilities.Hamming_distance(ref_codeword, codeword) 
                                    for sample,codeword in sample_codewords.items()}
     min_distance = min(sample_to_distance.values())
     low_dist_samples = [sample for sample,distance in sample_to_distance.items() 
@@ -645,6 +650,19 @@ def plot_parameter_space_1(deconv_data_by_parameters, N_errors_allowed, chosen_p
     mplt.xlabel("number of insertions mapped with at most %s errors"%N_errors_allowed)
     mplt.ylabel("% of those out of all uniquely mapped insertions")
     # MAYBE-TODO could try changing the marker shape/size/color to reflect the other parameters?
+
+
+def codeword_position_errors(observed_and_expected_codewords, name='?'):
+    """ Return and plot how often which codeword position is different between observed and closest matchd expected codewords. 
+    
+    Input should be a list of (observed, closest_matched_expected) codeword tuples.
+    """
+    N_errors_per_position = [0 for x in str(observed_and_expected_codewords[0][0])]
+    for observed,expected in observed_and_expected_codewords:
+        for pos,(obs,exp) in enumerate(zip(str(observed), str(expected))):
+            if not obs==exp:
+                N_errors_per_position[pos] += 1
+    return N_errors_per_position
 
 
 def plot_plate_well_positions(well_list, marker='o', markersize=5, markeredgecolor='None', markerfacecolor='black', offset=0):
