@@ -354,6 +354,36 @@ def print_deconvolution_summary(description, N_matched_insertions, N_unmatched_i
                                          for d,n in sorted(unmatched_insertion_counts_by_distance.items())]))
 
 
+def per_mutant_deconvolution(joint_dataset, dataset_name, pooling_scheme_file, sample_and_pool_names, N_present, N_absent, 
+                             cutoff_position, overall_min=2, short=False):
+    """ Convenience function for deconvolution and summary/printing. 
+    Uses per-mutant cutoffs WITH normalization, assumes we're always taking the max absent and min present value 
+     out of however many we're given; can print full info or a short tab-separated line. 
+     """
+    pool_names, sample_numbers_to_names = sample_and_pool_names
+    conversion_function = lambda x: readcounts_to_presence__mutant_1(x, N_present, N_absent, overall_min, 
+                                                                     min, max, cutoff_position, overall_min)
+    output = combinatorial_deconvolution(joint_dataset, pooling_scheme_file, pool_names, conversion_function, 
+                                         new_sample_names=sample_numbers_to_names, normalize_pool_readcounts=True, 
+                                         return_readcounts=True)
+    insertion_readcounts, insertion_codewords, insertion_samples, codeword_distances = output
+    summary = get_deconvolution_summary(insertion_samples, codeword_distances)
+    if short:
+        matched, unmatched, matched_by_dist, _ = summary
+        total = matched + unmatched
+        perfect_matched = matched_by_dist[0]
+        good_matched = matched_by_dist[0] + matched_by_dist[1]
+        okay_matched = matched_by_dist[0] + matched_by_dist[1] + matched_by_dist[2]
+        print '\t'.join([str(N_present), str(N_absent), str(cutoff_position), str(overall_min), dataset_name, str(matched), 
+                         general_utilities.value_and_percentages(perfect_matched, [matched]), 
+                         general_utilities.value_and_percentages(good_matched, [matched]), 
+                         general_utilities.value_and_percentages(okay_matched, [matched])])
+    else:
+        print_deconvolution_summary("%s data, per mutant (max top %s, min bottom %s, cutoff pos %s, min %s)"%(dataset_name, 
+                                                                  N_present, N_absent, cutoff_position, overall_min), *summary)
+    return insertion_readcounts, insertion_codewords, insertion_samples, codeword_distances, summary
+
+
 def pick_best_parameters(deconv_data_by_parameters, N_errors_allowed, N_good_factor, percent_good_factor, max_N_high=None):
     """ Pick the best deconvolution parameters, depending on what aspect of the result we want to optimize.
 
