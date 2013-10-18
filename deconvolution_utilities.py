@@ -714,6 +714,40 @@ def plot_plate_well_positions(well_list, marker='o', markersize=5, markeredgecol
     mplt.plot([x+offset for x in columns], rows, marker, 
               markersize=markersize, markeredgecolor=markeredgecolor, markerfacecolor=markerfacecolor)
 
+################################################## Extra analysis/utilities #######################################################
+
+def grab_matching_5prime_3prime(DECONV_data, max_distance):
+    """ Grab all the cases with perfectly or near-perfectly matching 5' and 3' ends.
+
+    Skip "colonies" where the plate or well is unknown (i.e. '-')! (MAYBE-TODO
+    look at those too? If the distance is 0, they're almost certainly really
+    the 5' and 3' end of the same thing...)
+
+    When there are multiple 3' or 5' cases, look at all combinations, and take
+    the best one that's within 1kb (must be same chromosome and strand)
+
+    Return a (plate,well):(distance_between_sides, position_5prime, position_3prime) dict, 
+     where positions are (chrom, strand, min_pos, full_pos) tuples.
+    """
+    positions_by_colony = defaultdict(lambda: defaultdict(list))
+    for line in DECONV_data:
+        plate, well, _, _, _, _, side, chrom, strand, min_pos, full_pos = line[:11]    
+        if '-' not in (plate, well):
+            positions_by_colony[(plate, well)][side].append((chrom, strand, min_pos, full_pos))
+    # When there are multiple 3' or 5' cases, look at all combinations, and take the best one that's within 1kb (must be same chromosome and strand)
+    distance_and_positions_by_colony = {}
+    for colony, data in positions_by_colony.iteritems():
+        distances_and_positions = []
+        for pos_5prime in data["5'"]:
+          for pos_3prime in data["3'"]:
+            if pos_5prime[:2] == pos_3prime[:2]:
+                dist = abs(pos_5prime[2] - pos_3prime[2])
+                if dist < max_distance:  
+                    distances_and_positions.append((dist, pos_5prime, pos_3prime))
+        if distances_and_positions:
+            distance_and_positions_by_colony[colony] = sorted(distances_and_positions)[0]
+    return distance_and_positions_by_colony
+
 
 ###################################################### Testing ###########################################################
 
