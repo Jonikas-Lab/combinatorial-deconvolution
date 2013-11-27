@@ -784,9 +784,9 @@ class Testing(unittest.TestCase):
         # make a test case with 3 pools and 3 insertions: readcounts 0,1,10; 9,20,0; 1,0,3
         pools = ['A', 'B', 'C']
         pos1, pos2, pos3 = self._make_positions()
-        insertion1 = mutant_analysis_classes.Insertional_mutant(pos1, multi_dataset=True)
-        insertion2 = mutant_analysis_classes.Insertional_mutant(pos2, multi_dataset=True)
-        insertion3 = mutant_analysis_classes.Insertional_mutant(pos3, multi_dataset=True)
+        insertion1 = mutant_analysis_classes.Insertional_mutant_multi_dataset(pos1)
+        insertion2 = mutant_analysis_classes.Insertional_mutant_multi_dataset(pos2)
+        insertion3 = mutant_analysis_classes.Insertional_mutant_multi_dataset(pos3)
         insertions = [insertion1, insertion2, insertion3]
         # the three numerical arguments to add_counts are total_reads, perfect_reads, sequence_variants (not used).
         insertion1.add_counts(0,  0,  0, dataset_name=pools[0])
