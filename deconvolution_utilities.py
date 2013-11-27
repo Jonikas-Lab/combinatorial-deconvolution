@@ -741,7 +741,7 @@ def grab_matching_5prime_3prime(DECONV_data, max_distance):
         for pos_5prime in data["5'"]:
           for pos_3prime in data["3'"]:
             if pos_5prime[:2] == pos_3prime[:2]:
-                dist = abs(pos_5prime[2] - pos_3prime[2])
+                dist = abs(int(pos_5prime[2]) - int(pos_3prime[2]))
                 if dist < max_distance:  
                     distances_and_positions.append((dist, pos_5prime, pos_3prime))
         if distances_and_positions:
