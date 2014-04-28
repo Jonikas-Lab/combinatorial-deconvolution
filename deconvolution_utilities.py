@@ -716,7 +716,7 @@ def plot_plate_well_positions(well_list, marker='o', markersize=5, markeredgecol
 
 ################################################## Extra analysis/utilities #######################################################
 
-def grab_matching_5prime_3prime(DECONV_data, max_distance):
+def grab_matching_5prime_3prime(DECONV_data, max_distance, position_index=6):
     """ Grab all the cases with perfectly or near-perfectly matching 5' and 3' ends.
 
     Skip "colonies" where the plate or well is unknown (i.e. '-')! (MAYBE-TODO
@@ -731,7 +731,8 @@ def grab_matching_5prime_3prime(DECONV_data, max_distance):
     """
     positions_by_colony = defaultdict(lambda: defaultdict(list))
     for line in DECONV_data:
-        plate, well, _, _, _, _, side, chrom, strand, min_pos, full_pos = line[:11]    
+        plate, well = line[:2]
+        side, chrom, strand, min_pos, full_pos = line[position_index:position_index+5]    
         if '-' not in (plate, well):
             positions_by_colony[(plate, well)][side].append((chrom, strand, min_pos, full_pos))
     # When there are multiple 3' or 5' cases, look at all combinations, and take the best one that's within 1kb (must be same chromosome and strand)
