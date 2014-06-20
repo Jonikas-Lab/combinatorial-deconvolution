@@ -413,7 +413,7 @@ def pick_best_parameters(deconv_data_by_parameters, N_errors_allowed, N_good_fac
     return best_parameters
         
 
-def merge_deconvolution_levels(best_data, good_data, decent_data):
+def merge_deconvolution_levels(best_data, good_data, decent_data, include_non_unique=False):
     """ Merge best/good/decent deconvolution data: take best set w/ 0 errors, remaining good set w/ 0-1 errors, remaining decent set.
 
     All three args should be (insertion_readcounts, insertion_codewords, insertion_samples, insertion_codeword_distances, *extras) 
@@ -442,6 +442,7 @@ def merge_deconvolution_levels(best_data, good_data, decent_data):
         elif good_data[3][insertion_pos] <=1:           _use_insertion_data(insertion_pos, good_data, "good")
         elif decent_data[3][insertion_pos] <=2:         _use_insertion_data(insertion_pos, decent_data, "decent")
         elif decent_data[2][insertion_pos] is not None: _use_insertion_data(insertion_pos, decent_data, "poor")
+        elif include_non_unique:                        _use_insertion_data(insertion_pos, decent_data, "not_found")
     return all_data
     # TODO unit-test!  I had an error in here!
 
