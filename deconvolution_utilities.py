@@ -750,6 +750,59 @@ def grab_matching_5prime_3prime(DECONV_data, max_distance, position_index=6):
             distance_and_positions_by_colony[colony] = sorted(distances_and_positions)[0]
     return distance_and_positions_by_colony
 
+def add_RISCC_to_deconvolution_data(DECONV_header, DECONV_data, RISCC_5prime, RISCC_3prime, 
+                                      max_allowed_distance, min_weird_distance):
+    """ Add RISCC data (two extra fields) to deconvolution output mutant list.
+    """
+    # TODO more detail in docstring!
+    NEW_deconv_data = []
+    NEW_deconv_header = DECONV_header[:2] + 'RISCC_status RISCC_distance'.split() + DECONV_header[2:]
+    status_counts = defaultdict(int)
+    for fields in DECONV_data:
+        position = Insertion_position(fields[7], fields[8], full_position=fields[10], immutable=True)
+        side = fields[6]
+        if side=="5'":      mutant = RISCC_5prime.get_mutant(position)
+        else:               mutant = RISCC_3prime.get_mutant(position)
+        status = mutant.RISCC_confirmation_status(side, max_allowed_distance, min_weird_distance=min_weird_distance)
+        status_distance = mutant.RISCC_max_confirmed_distance(max_allowed_distance)
+        if isnan(status_distance): status_distance = '-'
+        else:                            status_distance = str(status_distance)
+        status_counts[status] += 1
+        NEW_deconv_data.append(fields[:2] + tuple([status, status_distance]) + fields[2:])
+    for status,count in sorted(status_counts.items()):
+       print "%s: %s"%(status, value_and_percentages(count, [len(NEW_deconv_data)]))
+    return NEW_deconv_header, NEW_deconv_data, status_counts
+     # TODO unit-test!
+
+def get_all_distances(deconv_data):
+    """ Return lists of max confirmed distances for all mutants and separated into various categories.
+    """
+    # TODO more detail in docstring!
+    distances_all, distances_genomic, distances_cassette = [], [], []
+    distances_by_side_genomic, distances_by_quality_genomic = defaultdict(list), defaultdict(list)
+    distances_by_side_cassette, distances_by_quality_cassette = defaultdict(list), defaultdict(list)
+    for line in deconv_data:
+        # ignore cases with no max confirmed distance
+        if line[3] == '-':    continue
+        dist = int(line[3])
+        distances_all.append(dist)
+        if is_cassette_chromosome(line[9]):
+            distances_cassette.append(dist)
+            distances_by_side, distances_by_quality = distances_by_side_cassette, distances_by_quality_cassette
+        else:
+            distances_genomic.append(dist)
+            distances_by_side, distances_by_quality = distances_by_side_genomic, distances_by_quality_genomic
+        distances_by_side[line[8]].append(dist)
+        categories = line[4:6]
+        if 'unmapped' in categories:    distances_by_quality['unmapped'].append(dist)
+        elif 'poor' in categories:      distances_by_quality['poor'].append(dist)
+        elif 'decent' in categories:    distances_by_quality['decent'].append(dist)
+        elif 'good' in categories:      distances_by_quality['good'].append(dist)
+        elif 'best' in categories:      distances_by_quality['best'].append(dist)
+        else:                           print "weird categories??? %s"%' '.join(line)
+    return distances_all, distances_genomic, distances_cassette, distances_by_side_genomic, distances_by_quality_genomic, distances_by_side_cassette, distances_by_quality_cassette
+    # TODO unit-test!
+
 
 ###################################################### Testing ###########################################################
 
