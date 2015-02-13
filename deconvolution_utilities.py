@@ -826,6 +826,42 @@ def seqs_per_colony(DECONV_data, side_index, quiet=False):
                            ', '.join("%s+%s - %s"%(N5, N3, count) for ((N5, N3), count) in sorted(Nins_detail.items())))
     return Nins_counts
 
+def plot_seqs_per_colony(Nins_counts, collapse_from=4, separate_3p_5p=True):
+    """ Plot histogram of how many colonies have how many flanking sequences, based on output of seqs_per_colony.
+
+    Flanking sequence numbers >= collapse_from will be collapsed together.
+    """
+    import copy
+    Nins_counts_collapsed = copy.deepcopy(Nins_counts)
+    max_Nins_count = max(Nins_counts.keys())
+    if collapse_from < max_Nins_count:
+        for x in range(collapse_from+1, max_Nins_count+1):
+            del Nins_counts_collapsed[x]
+            Nins_counts_collapsed[collapse_from][0] += Nins_counts[x][0]
+            Nins_counts_collapsed[collapse_from][1].update(Nins_counts[x][1])
+    if not separate_3p_5p:
+        mplt.bar(sorted(Nins_counts_collapsed.keys()), 
+                 [Nins_counts_collapsed[x][0] for x in sorted(Nins_counts_collapsed.keys())], align='center')
+    else:
+        # make new details dict that's just separated into "all 5'", "all 3'" and "some of each" instead of by number of 5'/3'
+        Nins_counts_details = collections.defaultdict(lambda: {"5'": 0, "3'": 0, "both": 0})
+        for (N, (_, details)) in Nins_counts_collapsed.items():
+            for ((N5, N3), count) in details.items():
+                if N5==0:   Nins_counts_details[N]["3'"] += count
+                elif N3==0: Nins_counts_details[N]["5'"] += count
+                else:       Nins_counts_details[N]["both"] += count
+        data_range = sorted(Nins_counts_details.keys())
+        sides = "3' both 5'".split()
+        data = [[Nins_counts_details[x][side] for side in sides] for x in data_range]
+        bar_list = plotting_utilities.stacked_bar_plot(data, sample_names='1 2 3 4-6'.split(), colors='bcg')
+        mplt.legend(bar_list, sides)
+    mplt.xlim(0.4, collapse_from + .6)
+    xticks = list(range(1,collapse_from+1))
+    if collapse_from < max_Nins_count:  mplt.xticks(xticks, xticks[:-1] + ['%s-%s'%(collapse_from, max_Nins_count)])
+    else:                               mplt.xticks(xticks, xticks)
+    mplt.ylabel('number of colonies')
+    mplt.xlabel('number of insertion junctions')
+
 
 ###################################################### Testing ###########################################################
 
@@ -1015,7 +1051,6 @@ class Testing(unittest.TestCase):
         assert dict(results[1][1]) == {(1,0):1}
         assert dict(results[2][1]) == {(1,1):1, (0,2):1}
     # LATER-TODO add more unit-tests!
-
 
 
 if __name__=='__main__':
