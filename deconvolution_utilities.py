@@ -803,6 +803,29 @@ def get_all_distances(deconv_data):
     return distances_all, distances_genomic, distances_cassette, distances_by_side_genomic, distances_by_quality_genomic, distances_by_side_cassette, distances_by_quality_cassette
     # TODO unit-test!
 
+def seqs_per_colony(DECONV_data, side_index, quiet=False):
+    """ Return the number of colonies with 1, 2 etc sequences, total and separated by 5'/3'.  Also print.
+    
+    DECONV_data should be a list of lines, with line[0] being the mutant ID and line[side_index] being 5' or 3'.
+    Returns N_insertions:(N_colonies, side_details) dict, where side_details is a (N_5prime, N_3prime):N_colonies dict.
+    """
+    colony_Nins = collections.defaultdict(lambda: {"5'": 0, "3'": 0})
+    for line in DECONV_data:
+        colony = line[0]
+        side = line[side_index]
+        colony_Nins[colony][side] += 1
+    Nins_counts = collections.defaultdict(lambda: [0, collections.defaultdict(int)])
+    for Nins_data in colony_Nins.values():
+        N_5prime, N_3prime = Nins_data["5'"], Nins_data["3'"]
+        total = N_5prime+N_3prime
+        Nins_counts[total][0] += 1
+        Nins_counts[total][1][(N_5prime, N_3prime)] += 1
+    if not quiet:
+        for Nins, (Nins_count, Nins_detail) in sorted(Nins_counts.items()):
+            print "%s insertions - %s total. By number of 5' and 3': %s."%(Nins, Nins_count, 
+                           ', '.join("%s+%s - %s"%(N5, N3, count) for ((N5, N3), count) in sorted(Nins_detail.items())))
+    return Nins_counts
+
 
 ###################################################### Testing ###########################################################
 
@@ -981,6 +1004,16 @@ class Testing(unittest.TestCase):
                     if sample == 'None':    assert (out_sample is None and out_dist == distance)
                     else:                   assert (out_sample, out_dist) == (sample, distance)
 
+    def test__seqs_per_colony(self):
+        assert seqs_per_colony([], 1) == {}
+        # doing comparisons indirectly to get around all the defaultdicts in the output
+        results = seqs_per_colony([[1, "3'"], [1, "5'"], [2, "3'"], [2, "3'"], [3, "5'"]], 1, quiet=True)
+        assert len(results) == 2
+        assert len(results[1]) == len(results[2]) == 2
+        assert results[1][0] == 1
+        assert results[2][0] == 2
+        assert dict(results[1][1]) == {(1,0):1}
+        assert dict(results[2][1]) == {(1,1):1, (0,2):1}
     # LATER-TODO add more unit-tests!
 
 
