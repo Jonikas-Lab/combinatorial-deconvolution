@@ -839,9 +839,12 @@ def plot_seqs_per_colony(Nins_counts, collapse_from=4, separate_3p_5p=True):
             del Nins_counts_collapsed[x]
             Nins_counts_collapsed[collapse_from][0] += Nins_counts[x][0]
             Nins_counts_collapsed[collapse_from][1].update(Nins_counts[x][1])
+    data_range = sorted(Nins_counts_collapsed.keys())
+    data_names = data_range if collapse_from >= max_Nins_count else data_range[:-1] + ['%s-%s'%(collapse_from, max_Nins_count)]
     if not separate_3p_5p:
         mplt.bar(sorted(Nins_counts_collapsed.keys()), 
                  [Nins_counts_collapsed[x][0] for x in sorted(Nins_counts_collapsed.keys())], align='center')
+        mplt.xticks(data_range, data_names)
         mplt.xlim(0.4, collapse_from + .6)
     else:
         # make new details dict that's just separated into "all 5'", "all 3'" and "some of each" instead of by number of 5'/3'
@@ -851,14 +854,11 @@ def plot_seqs_per_colony(Nins_counts, collapse_from=4, separate_3p_5p=True):
                 if N5==0:   Nins_counts_details[N]["3'"] += count
                 elif N3==0: Nins_counts_details[N]["5'"] += count
                 else:       Nins_counts_details[N]["both"] += count
-        data_range = sorted(Nins_counts_details.keys())
         sides = "3' both 5'".split()
         data = [[Nins_counts_details[x][side] for side in sides] for x in data_range]
         bar_list = plotting_utilities.stacked_bar_plot(data, sample_names='1 2 3 4-6'.split(), colors='bcg')
         mplt.legend(bar_list, sides)
     xticks = list(range(1,collapse_from+1))
-    if collapse_from < max_Nins_count:  mplt.xticks(xticks, xticks[:-1] + ['%s-%s'%(collapse_from, max_Nins_count)])
-    else:                               mplt.xticks(xticks, xticks)
     mplt.ylabel('number of colonies')
     mplt.xlabel('number of insertion junctions')
 
