@@ -31,6 +31,7 @@ from matplotlib.font_manager import FontProperties
 import general_utilities, plotting_utilities
 import binary_code_utilities
 import mutant_analysis_classes
+import mutant_utilities
 
 class DeconvolutionError(Exception):
     """ Exceptions in the deconvolution_utilities module."""
@@ -749,6 +750,101 @@ def grab_matching_5prime_3prime(DECONV_data, max_distance, position_index=6):
         if distances_and_positions:
             distance_and_positions_by_colony[colony] = sorted(distances_and_positions)[0]
     return distance_and_positions_by_colony
+
+def get_matching_sides_from_table(DECONV_data_table, ID_cols=[0,1], side_chrom_strand_minpos_cols=[2,3,4,5], 
+                                  LEAPseq_cols=[10,12,13], min_conf_dist=500, max_percent_wrong=30, 
+                                  distance_cutoffs=[0,10,100,1000,10000], warn_if_3pos_within=100000, only_2ins_cases=False,
+                                  print_data=True):
+    """ ___
+    """
+    # TODO write docstring based on comments
+    # Grab all the insertions per colony - for real colonies only, no unknown-plate or unknown-well cases, no cassette positions (since those are obviously not real insertion positions anyway, and the cassette is small enough that we could get approximately matching ), no unaligned positions (since they can't match anything anyway).
+    # Output: positions_by_colony is a (plate,well):data dict, where data is a (side,chr,strand,minpos):extra_data_list dict, where extra_data_list matches extra_info_header.
+    positions_by_colony = collections.defaultdict(set)
+    for line in DECONV_data_table:
+        ID = tuple(line[x] for x in ID_cols)
+        chrom = line[side_chrom_strand_minpos_cols[1]]
+        if any(x in ID for x in ('-', None, '?', '')):              continue
+        if mutant_analysis_classes.is_cassette_chromosome(chrom):   continue
+        if mutant_analysis_classes.is_other_chromosome(chrom):      continue
+        side_chrom_strand_minpos = tuple(line[x] for x in side_chrom_strand_minpos_cols)
+        positions_by_colony[ID].add(side_chrom_strand_minpos)
+    # When there are multiple insertions per colony, sort them by position (in order: chrom, minpos, strand, side), 
+    #  and take each adjacent pair - seems like the most sensible way.  Could take all pairs instead, but that would be too many.
+    insertion_pairs = []
+    if only_2ins_cases:
+        for colony, data in positions_by_colony.iteritems():
+            if len(data) == 2:
+                pos1, pos2 = sorted(data, key = lambda (side,chrom,strand,pos):(chrom,pos,strand,side))
+                insertion_pairs.append((pos1, pos2, colony))
+    else:
+        for colony, data in positions_by_colony.iteritems():
+            sorted_data = sorted(data, key = lambda (side,chrom,strand,pos):(chrom,pos,strand,side))
+            for (pos1, pos2) in zip(sorted_data, sorted_data[1:]):
+                insertion_pairs.append((pos1, pos2, colony))
+            if warn_if_3pos_within is not None:
+                for (pos1, pos2, pos3) in zip(sorted_data, sorted_data[1:], sorted_data[2:]):
+                    if pos1[1]==pos3[1] and pos3[3]-pos1[3] <= warn_if_3pos_within:
+                        print "Warning: colony %s has 3 positions within %sbp!\n %s, %s, %s"%(colony, warn_if_3pos_within, 
+                                                                                              pos1, pos2, pos3)
+    # Now figure out the relative direction for each position pair - depends on strand and side!  And how many options are there? outer-cassette, inner-cassette, same-strand, different-chromosome.  I have a function to do this.
+    # Categories:
+    # - same-direction: both flanking seqs were read in the same direction
+    # - inner-cassette: the flanking seqs face "away" from each other, as if there was an insertion between them, possibly with a deletion
+    # - outer-cassette: the flanking seqs face "toward" each other, so that if they're within 20bp of each other, they actually overlap, as if there was a duplication with the insertion or we have two cassettes with a junk fragment in between.
+    # TODO change those terms to something more intuitive?
+    pair_categories_and_distances = []
+    for pos1, pos2, colony in insertion_pairs:
+        side1, chrom1, strand1, minpos1 = pos1
+        side2, chrom2, strand2, minpos2 = pos2
+        category, dist = mutant_utilities.insertion_pair_type_distance((chrom1, strand1, minpos1), side1, 
+                                                                       (chrom2, strand2, minpos2), side2)
+        pair_categories_and_distances.append((dist, category, side1, side2, pos1, pos2, colony))
+    # Bin results into distance categories
+    data_by_ID_pos = {tuple([line[x] for x in ID_cols+side_chrom_strand_minpos_cols]): line for line in DECONV_data_table}
+    def _LEAPseq_data(line):
+        conf_dist, N_conf, N_wrong = [line[x] for x in LEAPseq_cols]
+        percent_wrong = N_wrong/(N_conf+N_wrong)*100 if N_conf+N_wrong else float('nan')
+        return conf_dist, percent_wrong
+    def _is_high_conf(pos, colony):
+        line = data_by_ID_pos[tuple(list(colony) + list(pos))]
+        conf_dist, percent_wrong = _LEAPseq_data(line)
+        return (conf_dist >= min_conf_dist and percent_wrong <= max_percent_wrong)
+
+    category_dist_count_data = {}
+    for curr_category in 'inner-cassette outer-cassette same-direction diff-chrom'.split():
+        dist_counts = [[0, 0, 0] for _ in range(len(distance_cutoffs)+1)]
+        category_dist_count_data[curr_category] = dist_counts
+        for (dist, category, side1, side2, pos1, pos2, colony) in pair_categories_and_distances:
+            if category != curr_category:   continue
+            cat_N = len(distance_cutoffs)
+            for N,dist_cutoff in enumerate(distance_cutoffs):
+                if dist <= dist_cutoff: 
+                    cat_N = N
+                    break
+            dist_counts[cat_N][0] += 1
+            if side1!=side2:    dist_counts[cat_N][1] += 1
+            dist_counts[cat_N][2] += (_is_high_conf(pos1, colony) and _is_high_conf(pos2, colony))
+
+        if print_data:
+            # MAYBE-TODO make the bin names nice (use kb etc)
+            bin_names = ["0bp"] + ["%s-%sbp"%(start+1, end) for (start,end) in zip(distance_cutoffs, distance_cutoffs[1:])]
+            bin_names.append("%s+bp"%distance_cutoffs[-1])
+            info = "%s (%% 5'+3', %% both-high-conf)::: "%curr_category
+            if curr_category == 'diff-chrom':
+                counts = [sum(x) for x in zip(*dist_counts)]
+                info += "%s all (%.0f%%, %.0f%%), "%(counts[0], 0 if not counts[0] else counts[1]/counts[0]*100, 
+                                                     0 if not counts[0] else counts[2]/counts[0]*100)
+            else:
+                for size_range, counts in zip(bin_names, dist_counts):
+                    info += "%s %s (%.2g%%, %.2g%%), "%(counts[0], size_range, 0 if not counts[0] else counts[1]/counts[0]*100, 
+                                                        0 if not counts[0] else counts[2]/counts[0]*100)
+            print info[:-2]
+
+    return positions_by_colony, insertion_pairs, pair_categories_and_distances, category_dist_count_data
+
+
+
 
 def add_RISCC_to_deconvolution_data(DECONV_header, DECONV_data, RISCC_5prime, RISCC_3prime, 
                                       max_allowed_distance, min_weird_distance):
